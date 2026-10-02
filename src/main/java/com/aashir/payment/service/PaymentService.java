@@ -4,6 +4,8 @@ import com.aashir.payment.entity.Payment;
 import com.aashir.payment.entity.PaymentStatus;
 import com.aashir.payment.event.PaymentSucceededEvent;
 import com.aashir.payment.kafka.PaymentKafkaProducer;
+import com.aashir.payment.provider.PaymentProvider;
+import com.aashir.payment.provider.PaymentResult;
 import com.aashir.payment.repository.PaymentRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -15,6 +17,7 @@ import java.util.Optional;
 public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final PaymentKafkaProducer paymentKafkaProducer;
+    private final PaymentProvider paymentProvider;
 
     public Payment createPayment(Payment payment, String idempotencyKey) {
 
@@ -46,5 +49,40 @@ public class PaymentService {
             paymentKafkaProducer.publishPaymentSucceeded(event);
         }
         return savedPayment;
+    }
+
+    public Payment processPayment(Long paymentId) {
+        Payment payment = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new RuntimeException("Payment not found"));
+
+        if(payment.getStatus() == PaymentStatus.SUCCESS) {
+            return payment;
+        }
+        if(payment.getStatus() == PaymentStatus.FAILED) {
+            return payment;
+        }
+        PaymentResult result = paymentProvider.processPayment(
+                payment.getOrderId(),
+                payment.getAmount(),
+                payment.getPaymentMethod(),
+                payment.getIdempotencyKey()
+        );
+
+        if(result.successful()){
+            payment.setStatus(PaymentStatus.SUCCESS);
+
+            Payment savedPayment = paymentRepository.save(payment);
+
+            PaymentSucceededEvent event = new PaymentSucceededEvent(
+                    savedPayment.getId(),
+                    savedPayment.getOrderId(),
+                    savedPayment.getAmount()
+            );
+
+            paymentKafkaProducer.publishPaymentSucceeded(event);
+            return savedPayment;
+        }
+        payment.setStatus(PaymentStatus.FAILED);
+        return paymentRepository.save(payment);
     }
 }

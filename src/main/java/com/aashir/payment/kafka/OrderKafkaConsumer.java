@@ -25,9 +25,11 @@ public class OrderKafkaConsumer {
         payment.setAmount(event.totalAmount());
         payment.setPaymentMethod(event.paymentMethod());
 
-        paymentService.createPayment(
+      Payment createdPayment = paymentService.createPayment(
                 payment,
                 "ORDER-" + event.orderId()
         );
+
+        paymentService.processPayment(createdPayment.getId());
     }
 }
