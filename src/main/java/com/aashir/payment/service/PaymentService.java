@@ -2,10 +2,12 @@ package com.aashir.payment.service;
 
 import com.aashir.payment.entity.Payment;
 import com.aashir.payment.entity.PaymentStatus;
+import com.aashir.payment.event.PaymentFailedEvent;
 import com.aashir.payment.event.PaymentSucceededEvent;
 import com.aashir.payment.kafka.PaymentKafkaProducer;
 import com.aashir.payment.provider.PaymentProvider;
 import com.aashir.payment.provider.PaymentResult;
+import com.aashir.payment.provider.PaymentResultStatus;
 import com.aashir.payment.repository.PaymentRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -68,7 +70,7 @@ public class PaymentService {
                 payment.getIdempotencyKey()
         );
 
-        if(result.successful()){
+        if(result.status() == PaymentResultStatus.SUCCESS){
             payment.setStatus(PaymentStatus.SUCCESS);
 
             Payment savedPayment = paymentRepository.save(payment);
@@ -83,6 +85,14 @@ public class PaymentService {
             return savedPayment;
         }
         payment.setStatus(PaymentStatus.FAILED);
-        return paymentRepository.save(payment);
+        Payment savedPayment = paymentRepository.save(payment);
+        PaymentFailedEvent event = new PaymentFailedEvent(
+                savedPayment.getId(),
+                savedPayment.getOrderId(),
+                savedPayment.getAmount(),
+                result.failureReason()
+        );
+        paymentKafkaProducer.publishPaymentFailed(event);
+        return savedPayment;
     }
 }
