@@ -22,7 +22,7 @@ public class Payment {
     @Column(nullable = false,precision = 19,scale = 2)
     private BigDecimal amount;
 
-    @Column(nullable = false,updatable = true)
+    @Column(nullable = false,unique = true)
     private String idempotencyKey;
 
     @Enumerated(EnumType.STRING)
