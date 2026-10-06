@@ -14,7 +14,8 @@ public class OrderKafkaConsumer {
 
     @KafkaListener(
             topics = "order-events",
-            groupId = "payment-service-group"
+            groupId = "payment-service-group",
+            containerFactory = "kafkaListenerContainerFactory"
     )
     public void handleOrderCreated(OrderCreatedKafkaEvent event){
         paymentService.handleOrderCreated(event);

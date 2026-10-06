@@ -123,7 +123,6 @@ public class PaymentService {
         );
 
         processPayment(createdPayment.getId());
-
         ProcessedEvent processedEvent = new ProcessedEvent();
         processedEvent.setEventId(event.eventId());
         processedEvent.setProcessedAt(LocalDateTime.now());
