@@ -2,10 +2,15 @@ package com.aashir.payment.controller;
 
 import com.aashir.payment.entity.Payment;
 import com.aashir.payment.entity.PaymentStatus;
+import com.aashir.payment.security.JwtService;
 import com.aashir.payment.service.PaymentService;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("/payments")
@@ -13,6 +18,7 @@ import org.springframework.web.bind.annotation.*;
 public class PaymentController {
 
     private final PaymentService paymentService;
+    private final JwtService jwtService;
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -29,5 +35,36 @@ public class PaymentController {
             @RequestParam PaymentStatus status
     ){
         return paymentService.updatePayment(paymentId, status);
+    }
+
+    @GetMapping("/me")
+    public ResponseEntity<Long> getCurrentUser(
+            HttpServletRequest request
+    ) {
+        String header = request.getHeader("Authorization");
+
+        String token = header.substring(7);
+
+        Long userId = jwtService.extractUserId(token);
+
+        return ResponseEntity.ok(userId);
+    }
+
+    @GetMapping("/mail")
+    public ResponseEntity<?> getCurrentUserEmail(HttpServletRequest request) {
+
+        String token = request
+                .getHeader("Authorization")
+                .substring(7);
+
+        Long userId = jwtService.extractUserId(token);
+        String email = jwtService.extractEmail(token);
+
+        return ResponseEntity.ok(
+                Map.of(
+                        "userId", userId,
+                        "email", email
+                )
+        );
     }
 }

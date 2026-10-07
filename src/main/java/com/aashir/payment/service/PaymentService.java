@@ -12,6 +12,8 @@ import com.aashir.payment.provider.PaymentResult;
 import com.aashir.payment.provider.PaymentResultStatus;
 import com.aashir.payment.repository.PaymentRepository;
 import com.aashir.payment.repository.ProcessedEventRepository;
+import com.aashir.payment.security.JwtService;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
