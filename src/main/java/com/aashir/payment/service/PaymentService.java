@@ -3,22 +3,24 @@ package com.aashir.payment.service;
 import com.aashir.payment.entity.Payment;
 import com.aashir.payment.entity.PaymentStatus;
 import com.aashir.payment.entity.ProcessedEvent;
-import com.aashir.payment.event.OrderCreatedKafkaEvent;
-import com.aashir.payment.event.PaymentFailedEvent;
-import com.aashir.payment.event.PaymentSucceededEvent;
+import com.aashir.payment.event.*;
 import com.aashir.payment.kafka.PaymentKafkaProducer;
 import com.aashir.payment.provider.PaymentProvider;
 import com.aashir.payment.provider.PaymentResult;
 import com.aashir.payment.provider.PaymentResultStatus;
 import com.aashir.payment.repository.PaymentRepository;
 import com.aashir.payment.repository.ProcessedEventRepository;
+import com.aashir.payment.security.AuthenticatedUser;
 import com.aashir.payment.security.JwtService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -38,7 +40,7 @@ public class PaymentService {
             return existingPayment.get();
         }
         payment.setIdempotencyKey(idempotencyKey);
-        payment.setStatus(PaymentStatus.PENDING);
+        payment.setStatus(PaymentStatus.UNPAID);
         return paymentRepository.save(payment);
     }
 
@@ -64,9 +66,7 @@ public class PaymentService {
         return savedPayment;
     }
 
-    public Payment processPayment(Long paymentId) {
-        Payment payment = paymentRepository.findById(paymentId)
-                .orElseThrow(() -> new RuntimeException("Payment not found"));
+    public Payment processPayment(Payment payment) {
 
         if(payment.getStatus() == PaymentStatus.SUCCESS) {
             return payment;
@@ -81,30 +81,40 @@ public class PaymentService {
                 payment.getIdempotencyKey()
         );
 
+        PaymentStatus status = switch (result.status()) {
+            case PENDING -> PaymentStatus.PENDING;
+            case SUCCESS -> PaymentStatus.SUCCESS;
+            case FAILED -> PaymentStatus.FAILED;
+        };
+
+        payment.setStatus(status);
+        payment.setTransactionId(result.transactionId());
+        payment.setFailureReason(result.failureReason());
+
+        Payment savedPayment = paymentRepository.save(payment);
+
         if(result.status() == PaymentResultStatus.SUCCESS){
             payment.setStatus(PaymentStatus.SUCCESS);
 
-            Payment savedPayment = paymentRepository.save(payment);
+            if (status == PaymentStatus.SUCCESS) {
+                PaymentSucceededEvent event = new PaymentSucceededEvent(
+                        UUID.randomUUID(),
+                        savedPayment.getId(),
+                        savedPayment.getOrderId(),
+                        savedPayment.getAmount()
+                );
+                paymentKafkaProducer.publishPaymentSucceeded(event);
+            }else if (status == PaymentStatus.FAILED) {
+                PaymentFailedEvent event = new PaymentFailedEvent(
+                        UUID.randomUUID(),
+                        savedPayment.getId(),
+                        savedPayment.getOrderId(),
+                        result.failureReason()
+                );
+                paymentKafkaProducer.publishPaymentFailed(event);
 
-            PaymentSucceededEvent event = new PaymentSucceededEvent(
-                    UUID.randomUUID(),
-                    savedPayment.getId(),
-                    savedPayment.getOrderId(),
-                    savedPayment.getAmount()
-            );
-
-            paymentKafkaProducer.publishPaymentSucceeded(event);
-            return savedPayment;
+            }
         }
-        payment.setStatus(PaymentStatus.FAILED);
-        Payment savedPayment = paymentRepository.save(payment);
-        PaymentFailedEvent event = new PaymentFailedEvent(
-                UUID.randomUUID(),
-                savedPayment.getId(),
-                savedPayment.getOrderId(),
-                result.failureReason()
-        );
-        paymentKafkaProducer.publishPaymentFailed(event);
         return savedPayment;
     }
 
@@ -117,19 +127,54 @@ public class PaymentService {
         Payment payment = new Payment();
         payment.setOrderId(event.orderId());
         payment.setAmount(event.totalAmount());
-        payment.setPaymentMethod(event.paymentMethod());
+        payment.setUserId(event.userId());
 
         Payment createdPayment = createPayment(
                 payment,
                 "ORDER-" + event.orderId()
         );
-
-        processPayment(createdPayment.getId());
         ProcessedEvent processedEvent = new ProcessedEvent();
         processedEvent.setEventId(event.eventId());
         processedEvent.setProcessedAt(LocalDateTime.now());
 
         processedEventRepository.save(processedEvent);
+
+    }
+
+    private Long getUserId() {
+        Authentication authentication =
+                SecurityContextHolder.getContext().getAuthentication();
+
+        AuthenticatedUser user =
+                (AuthenticatedUser) authentication.getPrincipal();
+
+        return user.getUserId();
+    }
+
+    @Transactional
+    public PaymentSuccessResponse getPaymentProccess(PaymentRequest paymentRequest) {
+
+        Long userId = getUserId();
+
+        Payment payment = paymentRepository.findByOrderId(paymentRequest.orderId())
+                .orElseThrow(() -> new RuntimeException("Payment not found"));
+
+        if(!Objects.equals(payment.getUserId(), userId)){
+            throw new  RuntimeException(String.format("Payment not found for orderId=%d", paymentRequest.orderId()));
+        }
+
+        if (payment.getStatus() == PaymentStatus.SUCCESS) {
+            throw new RuntimeException("Payment already completed");
+        }
+
+        payment.setPaymentMethod(paymentRequest.method());
+        Payment savedPayment = processPayment(payment);
+
+        return new PaymentSuccessResponse(
+                savedPayment.getId(),
+                savedPayment.getAmount(),
+                savedPayment.getStatus()
+        );
 
     }
 }

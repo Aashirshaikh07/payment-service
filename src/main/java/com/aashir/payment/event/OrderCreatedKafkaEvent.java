@@ -1,7 +1,5 @@
 package com.aashir.payment.event;
 
-import com.aashir.payment.entity.PaymentMethod;
-
 import java.math.BigDecimal;
 import java.util.UUID;
 
@@ -10,7 +8,6 @@ public record OrderCreatedKafkaEvent(
         Long orderId,
         String orderNumber,
         Long userId,
-        BigDecimal totalAmount,
-        PaymentMethod paymentMethod
+        BigDecimal totalAmount
 ) {
 }

@@ -30,8 +30,19 @@ public class Payment {
     private PaymentStatus status;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
     private PaymentMethod paymentMethod;
+
+    @Column(nullable = false)
+    private Long userId;
+
+    @Column(unique = true)
+    private String transactionId;
+
+    private String gatewayOrderId;
+
+    private String gatewayPaymentId;
+
+    private String failureReason;
 
     @Column(nullable = false,updatable = false)
     private LocalDateTime createdAt;

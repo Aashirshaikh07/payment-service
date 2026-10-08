@@ -2,12 +2,16 @@ package com.aashir.payment.controller;
 
 import com.aashir.payment.entity.Payment;
 import com.aashir.payment.entity.PaymentStatus;
+import com.aashir.payment.event.PaymentRequest;
+import com.aashir.payment.event.PaymentSuccessResponse;
+import com.aashir.payment.security.AuthenticatedUser;
 import com.aashir.payment.security.JwtService;
 import com.aashir.payment.service.PaymentService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -67,4 +71,23 @@ public class PaymentController {
                 )
         );
     }
+    @GetMapping("/security-test")
+    public ResponseEntity<?> securityTest(Authentication authentication) {
+
+        AuthenticatedUser user =
+                (AuthenticatedUser) authentication.getPrincipal();
+
+        return ResponseEntity.ok(
+                Map.of(
+                        "userId", user.getUserId(),
+                        "role", user.getRole()
+                )
+        );
+    }
+/*
+    public ResponseEntity<PaymentSuccessResponse> getPaymentRequest(PaymentRequest paymentRequest,HttpServletRequest request) {
+
+        PaymentSuccessResponse response = new PaymentSuccessResponse();
+        return ResponseEntity.ok();
+    }*/
 }

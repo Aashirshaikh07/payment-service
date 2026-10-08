@@ -1,5 +1,6 @@
 package com.aashir.payment.service;
 
+import com.aashir.payment.security.AuthenticatedUser;
 import com.aashir.payment.security.JwtService;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
@@ -40,9 +41,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         String token = header.substring(7);
 
         try{
+            Long userId = jwtService.extractUserId(token);
+            String email = jwtService.extractEmail(token);
+            String role = jwtService.extractRole(token);
 
+            AuthenticatedUser user = new AuthenticatedUser(
+                    userId,
+                    email,
+                    role
+            );
             UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                    "JWT_USER",
+                    user,
                     null,
                     Collections.emptyList()
             );
