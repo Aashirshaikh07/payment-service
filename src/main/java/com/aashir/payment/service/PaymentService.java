@@ -1,13 +1,15 @@
 package com.aashir.payment.service;
 
 import com.aashir.payment.entity.Payment;
+import com.aashir.payment.entity.PaymentAttempt;
 import com.aashir.payment.entity.PaymentStatus;
 import com.aashir.payment.entity.ProcessedEvent;
 import com.aashir.payment.event.*;
+import com.aashir.payment.gateway.RazorpayGateway;
 import com.aashir.payment.kafka.PaymentKafkaProducer;
 import com.aashir.payment.provider.PaymentProvider;
-import com.aashir.payment.provider.PaymentResult;
-import com.aashir.payment.provider.PaymentResultStatus;
+import com.aashir.payment.repository.CheckoutRequestRepository;
+import com.aashir.payment.repository.PaymentAttemptRepository;
 import com.aashir.payment.repository.PaymentRepository;
 import com.aashir.payment.repository.ProcessedEventRepository;
 import com.aashir.payment.security.AuthenticatedUser;
@@ -19,6 +21,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Objects;
 import java.util.Optional;
@@ -31,17 +34,22 @@ public class PaymentService {
     private final PaymentKafkaProducer paymentKafkaProducer;
     private final PaymentProvider paymentProvider;
     private final ProcessedEventRepository processedEventRepository;
+    private final PaymentAttemptRepository paymentAttemptRepository;
+    private final CheckoutRequestRepository checkoutRequestRepository;
+    private final RazorpayGateway razorpayGateway;
 
-    public Payment createPayment(Payment payment, String idempotencyKey) {
+    public Payment createPayment(Payment payment,String idempotencyKey) {
 
-        Optional<Payment> existingPayment = paymentRepository.findByIdempotencyKey(idempotencyKey);
-
-        if (existingPayment.isPresent()) {
-            return existingPayment.get();
-        }
-        payment.setIdempotencyKey(idempotencyKey);
-        payment.setStatus(PaymentStatus.UNPAID);
-        return paymentRepository.save(payment);
+        return paymentRepository.findByIdempotencyKey(idempotencyKey)
+                .orElseGet(() -> paymentRepository.save(
+                        Payment.create(
+                                payment.getOrderId(),
+                                payment.getUserId(),
+                                payment.getAmount(),
+                                "INR",
+                                idempotencyKey
+                        )
+                ));
     }
 
     public Payment updatePayment(Long paymentId, PaymentStatus status) {
@@ -49,73 +57,30 @@ public class PaymentService {
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new RuntimeException("Payment not found"));
 
-        payment.setStatus(status);
+        Optional<PaymentAttempt> latestAttempt =
+                paymentAttemptRepository.findTopByPaymentIdOrderByAttemptNumberDesc(paymentId);
+
+        if(status == PaymentStatus.SUCCESS){
+            throw new UnsupportedOperationException(
+                    "Payment success must be confirmed through verified gateway processing"
+            );
+        }
+        if (status == PaymentStatus.FAILED) {
+            payment.markFailed();
+        } else {
+            throw new IllegalArgumentException(
+                    "Unsupported payment status update: " + status
+            );
+        }
         Payment savedPayment = paymentRepository.save(payment);
 
-        if(status == PaymentStatus.SUCCESS) {
-            //it's problem here for UUID
-            PaymentSucceededEvent event =
-                    new PaymentSucceededEvent(
-                            UUID.randomUUID(),
-                            savedPayment.getId(),
-                            savedPayment.getOrderId(),
-                            savedPayment.getAmount()
-                    );
-            paymentKafkaProducer.publishPaymentSucceeded(event);
-        }
         return savedPayment;
     }
 
     public Payment processPayment(Payment payment) {
-
-        if(payment.getStatus() == PaymentStatus.SUCCESS) {
-            return payment;
-        }
-        if(payment.getStatus() == PaymentStatus.FAILED) {
-            return payment;
-        }
-        PaymentResult result = paymentProvider.processPayment(
-                payment.getOrderId(),
-                payment.getAmount(),
-                payment.getPaymentMethod(),
-                payment.getIdempotencyKey()
+        throw new UnsupportedOperationException(
+                "Mock payment processing is retired. Use the Razorpay checkout flow."
         );
-
-        PaymentStatus status = switch (result.status()) {
-            case PENDING -> PaymentStatus.PENDING;
-            case SUCCESS -> PaymentStatus.SUCCESS;
-            case FAILED -> PaymentStatus.FAILED;
-        };
-
-        payment.setStatus(status);
-        payment.setTransactionId(result.transactionId());
-        payment.setFailureReason(result.failureReason());
-
-        Payment savedPayment = paymentRepository.save(payment);
-
-        if(result.status() == PaymentResultStatus.SUCCESS){
-            payment.setStatus(PaymentStatus.SUCCESS);
-
-            if (status == PaymentStatus.SUCCESS) {
-                PaymentSucceededEvent event = new PaymentSucceededEvent(
-                        UUID.randomUUID(),
-                        savedPayment.getId(),
-                        savedPayment.getOrderId(),
-                        savedPayment.getAmount()
-                );
-                paymentKafkaProducer.publishPaymentSucceeded(event);
-            }else if (status == PaymentStatus.FAILED) {
-                PaymentFailedEvent event = new PaymentFailedEvent(
-                        UUID.randomUUID(),
-                        savedPayment.getId(),
-                        savedPayment.getOrderId(),
-                        result.failureReason()
-                );
-                paymentKafkaProducer.publishPaymentFailed(event);
-
-            }
-        }
-        return savedPayment;
     }
 
     @Transactional
@@ -124,15 +89,14 @@ public class PaymentService {
             return;
         }
 
-        Payment payment = new Payment();
-        payment.setOrderId(event.orderId());
-        payment.setAmount(event.totalAmount());
-        payment.setUserId(event.userId());
-
-        Payment createdPayment = createPayment(
-                payment,
+        Payment payment = Payment.create(
+                event.orderId(),
+                event.userId(),
+                event.totalAmount(),
+                "INR",
                 "ORDER-" + event.orderId()
         );
+        createPayment(payment,"ORDER-" + event.orderId());
         ProcessedEvent processedEvent = new ProcessedEvent();
         processedEvent.setEventId(event.eventId());
         processedEvent.setProcessedAt(LocalDateTime.now());
@@ -167,13 +131,8 @@ public class PaymentService {
             throw new RuntimeException("Payment already completed");
         }
 
-        payment.setPaymentMethod(paymentRequest.method());
-        Payment savedPayment = processPayment(payment);
-
-        return new PaymentSuccessResponse(
-                savedPayment.getId(),
-                savedPayment.getAmount(),
-                savedPayment.getStatus()
+        throw new UnsupportedOperationException(
+                "Payment initiation must use the Razorpay checkout flow."
         );
 
     }
