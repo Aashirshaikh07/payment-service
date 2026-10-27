@@ -1,12 +1,17 @@
 package com.aashir.payment.controller;
 
+import com.aashir.payment.dto.PaymentStatusResponse;
+import com.aashir.payment.dto.PaymentVerificationResponse;
+import com.aashir.payment.dto.VerifyPaymentRequest;
 import com.aashir.payment.entity.PaymentMethod;
 import com.aashir.payment.event.CheckoutResponse;
 import com.aashir.payment.security.AuthenticatedUser;
 import com.aashir.payment.security.JwtService;
 import com.aashir.payment.service.CheckoutService;
 import com.aashir.payment.service.PaymentService;
+import com.aashir.payment.service.PaymentVerificationService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -22,6 +27,7 @@ public class PaymentController {
     private final CheckoutService checkoutService;
     private final PaymentService paymentService;
     private final JwtService jwtService;
+    private final PaymentVerificationService paymentVerificationService;
 /*
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -84,16 +90,33 @@ public class PaymentController {
         );
     }
 
-    @PostMapping("/{paymentId}/checkout")
+    @PostMapping("/{orderId}/checkout")
     public ResponseEntity<CheckoutResponse> createCheckout(
-            @PathVariable Long paymentId,
+            @PathVariable Long orderId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestParam PaymentMethod method
     ) {
         CheckoutResponse response = checkoutService.createCheckout(
-                paymentId, idempotencyKey,method);
+                orderId, idempotencyKey,method);
 
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/{orderId}")
+    public ResponseEntity<PaymentStatusResponse> getPaymentStatus(
+            @PathVariable Long orderId
+    ) {
+        return ResponseEntity.ok(checkoutService.getPaymentStatus(orderId));
+    }
+
+    @PostMapping("/verify")
+    public ResponseEntity<PaymentVerificationResponse> verifyPayment(
+          @Valid @RequestBody VerifyPaymentRequest request
+    ){
+        return ResponseEntity.ok(
+                paymentVerificationService.verify(request)
+        );
+
     }
  /*
     public ResponseEntity<PaymentSuccessResponse> getPaymentRequest(PaymentRequest paymentRequest,HttpServletRequest request) {
@@ -101,4 +124,5 @@ public class PaymentController {
         PaymentSuccessResponse response = new PaymentSuccessResponse();
         return ResponseEntity.ok();
     }*/
+
 }

@@ -5,6 +5,7 @@ import java.math.BigDecimal;
 public record CheckoutPreparation (
         boolean replay,
         Long paymentId,
+        Long orderId,
         Long paymentAttemptId,
         Long checkoutRequestId,
         BigDecimal amount,
@@ -16,6 +17,7 @@ public record CheckoutPreparation (
         return new CheckoutPreparation(
                 true,
                 paymentId,
+                null,
                 paymentAttemptId,
                 checkoutRequestId,
                 null,
@@ -36,6 +38,7 @@ public record CheckoutPreparation (
         return new CheckoutPreparation(
                 false,
                 paymentId,
+                null,
                 paymentAttemptId,
                 checkoutRequestId,
                 amount,

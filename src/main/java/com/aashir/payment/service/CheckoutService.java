@@ -1,9 +1,13 @@
 package com.aashir.payment.service;
 
+import com.aashir.payment.dto.PaymentStatusResponse;
+import com.aashir.payment.entity.Payment;
 import com.aashir.payment.entity.PaymentMethod;
 import com.aashir.payment.event.CheckoutResponse;
 import com.aashir.payment.exception.CheckoutGatewayException;
+import com.aashir.payment.exception.PaymentNotFoundException;
 import com.aashir.payment.gateway.RazorpayGateway;
+import com.aashir.payment.repository.PaymentRepository;
 import com.aashir.payment.security.AuthenticatedUser;
 import com.razorpay.Order;
 import com.razorpay.RazorpayException;
@@ -21,14 +25,18 @@ public class CheckoutService {
     private final CheckoutPreparationService preparationService;
     private final CheckoutCompletionService completionService;
     private final RazorpayGateway razorpayGateway;
+    private final PaymentRepository paymentRepository;
 
-    public CheckoutResponse createCheckout(Long paymentId, String idempotencyKey, PaymentMethod method){
+    public CheckoutResponse createCheckout(Long orderId, String idempotencyKey, PaymentMethod method){
         validateIdempotencyKey(idempotencyKey);
 
         Long userId = getAuthenticatedUserId();
 
+        Payment payment = paymentRepository.findByOrderId(orderId)
+                .orElseThrow(() -> new PaymentNotFoundException("Payment not found"));
+
         CheckoutPreparation preparation = preparationService.prepare(
-                paymentId,
+                payment,
                 userId,
                 idempotencyKey,
                 method
@@ -40,8 +48,8 @@ public class CheckoutService {
                     preparation.paymentAttemptId(),
                     preparation.razorpayOrderId(),
                     razorpayGateway.getKeyId(),
-                    null,
-                    null,
+                    payment.getAmount(),
+                    payment.getCurrency(),
                     "CHECKOUT_CREATED"
             );
         }
@@ -90,6 +98,22 @@ public class CheckoutService {
                     exception
             );
         }
+    }
+
+    public PaymentStatusResponse getPaymentStatus(Long orderId) {
+        Long userId = getAuthenticatedUserId();
+
+        Payment payment = paymentRepository.findByOrderId(orderId)
+                .filter(found -> found.getUserId().equals(userId))
+                .orElseThrow(() -> new PaymentNotFoundException("Payment not found"));
+
+        return new PaymentStatusResponse(
+                payment.getId(),
+                payment.getOrderId(),
+                payment.getStatus().name(),
+                payment.getAmount(),
+                payment.getCurrency()
+        );
     }
 
     private Long getAuthenticatedUserId() {

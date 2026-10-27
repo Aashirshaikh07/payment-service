@@ -23,17 +23,16 @@ public class CheckoutPreparationService {
     private final CheckoutRequestRepository checkoutRequestRepository;
     private final CheckoutRequestFingerprint fingerprint;
 
+
     @Transactional
-    public CheckoutPreparation prepare(Long paymentId, Long userId,
+    public CheckoutPreparation prepare(Payment payment, Long userId,
                                        String idempotencyKey, PaymentMethod method){
-        Payment payment = paymentRepository.findById(paymentId)
-                .orElseThrow(() -> new PaymentNotFoundException("Payment not found"));
 
         if (!payment.getUserId().equals(userId)) {
             throw new PaymentNotFoundException("Payment not found");
         }
 
-        String requestFingerprint = fingerprint.create(paymentId, userId);
+        String requestFingerprint = fingerprint.create(payment.getId(), userId);
 
         var existingRequest = checkoutRequestRepository.findByUserIdAndIdempotencyKey(
                         userId, idempotencyKey);
