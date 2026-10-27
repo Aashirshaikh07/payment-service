@@ -13,19 +13,15 @@ import com.aashir.payment.repository.PaymentAttemptRepository;
 import com.aashir.payment.repository.PaymentRepository;
 import com.aashir.payment.repository.ProcessedEventRepository;
 import com.aashir.payment.security.AuthenticatedUser;
-import com.aashir.payment.security.JwtService;
-import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor

@@ -123,6 +123,7 @@ public class Payment {
             throw new IllegalStateException(
                     "Cannot start an attempt on a " + status + " payment");
         }
+
         boolean hasOpenAttempt = attempts.stream()
                 .anyMatch(attempt -> !attempt.isTerminal());
         if (hasOpenAttempt) {

@@ -1,7 +1,5 @@
 package com.aashir.payment.service;
 
-import com.aashir.payment.entity.Payment;
-import com.aashir.payment.entity.PaymentStatus;
 import com.aashir.payment.security.AuthenticatedUser;
 import com.aashir.payment.security.JwtService;
 import io.jsonwebtoken.JwtException;
@@ -13,9 +11,6 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
@@ -63,12 +58,6 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             SecurityContextHolder.getContext().setAuthentication(authentication);
 
-            System.out.println(
-                    "AUTHENTICATION = " +
-                            SecurityContextHolder.getContext().getAuthentication()
-            );
-
-            filterChain.doFilter(request, response);
 
         } catch (JwtException  | IllegalArgumentException exception) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
@@ -76,7 +65,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             response.getWriter().write(
                     "{\"status\":401,\"message\":\"Invalid JWT token\"}"
             );
+           return;
         }
+        filterChain.doFilter(request, response);
+
     }
 
 }
