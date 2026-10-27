@@ -13,7 +13,7 @@ public class PaymentKafkaProducer {
     private static final String SUCCESS_TOPIC = "payment-succeeded";
     private static final String FAILURE_TOPIC = "payment-failed";
     private final KafkaTemplate<String, Object> kafkaTemplate;
-
+    // currently we never use this
     public void publishPaymentSucceeded(PaymentSucceededEvent event) {
         kafkaTemplate.send(SUCCESS_TOPIC, event.orderId().toString(), event);
     }
