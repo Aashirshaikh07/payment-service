@@ -38,15 +38,34 @@ public interface WebhookEventRepository extends JpaRepository<WebhookEvent, Stri
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("""
-            UPDATE WebhookEvent event
-            SET event.status = :processing,
-                event.lastError = null
-            WHERE event.eventId = :eventId
-            AND event.status IN :claimableStatuses
-            """)
+        UPDATE WebhookEvent event
+        SET event.status = :processing,
+            event.processingAt = CURRENT_TIMESTAMP,
+            event.lastError = null
+        WHERE event.eventId = :eventId
+        AND event.status IN :claimableStatuses
+        """)
     int claimForProcessing(
             @Param("eventId") String eventId,
             @Param("processing") WebhookEventStatus processing,
             @Param("claimableStatuses") Collection<WebhookEventStatus> claimableStatuses
+    );
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("""
+        UPDATE WebhookEvent event
+        SET event.status = :failed,
+            event.processingAt = null,
+            event.lastError = :reason
+        WHERE event.status = :processing
+        AND event.processingAt IS NOT NULL
+        AND event.processingAt < :staleBefore
+        """)
+    int recoverStaleProcessingEvents(
+            @Param("processing") WebhookEventStatus processing,
+            @Param("failed") WebhookEventStatus failed,
+            @Param("staleBefore") Instant staleBefore,
+            @Param("reason") String reason
     );
 }

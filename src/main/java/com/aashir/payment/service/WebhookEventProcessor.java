@@ -6,8 +6,10 @@ import com.aashir.payment.entity.WebhookEventStatus;
 import com.aashir.payment.repository.WebhookEventRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.List;
 
 @Service
@@ -15,6 +17,10 @@ public class WebhookEventProcessor {
 
     private static final Logger log =
             LoggerFactory.getLogger(WebhookEventProcessor.class);
+
+    private static final long PROCESSING_LEASE_TIMEOUT_MS = 600_000;
+    private static final String STALE_PROCESSING_REASON =
+            "Webhook processing lease expired; event recovered for retry";
 
     private static final List<WebhookEventStatus> CLAIMABLE_STATUSES =
             List.of(
@@ -33,7 +39,19 @@ public class WebhookEventProcessor {
         this.reconciliationService = reconciliationService;
     }
 
+    @Scheduled(fixedDelayString = "${webhook.processing.scan-interval-ms:5000}")
     public void processPendingEvents() {
+
+        int recovered = webhookEventRepository.recoverStaleProcessingEvents(
+                WebhookEventStatus.PROCESSING,
+                WebhookEventStatus.FAILED,
+                Instant.now().minusMillis(PROCESSING_LEASE_TIMEOUT_MS),
+                STALE_PROCESSING_REASON
+        );
+
+        if (recovered > 0) {
+            log.warn("Recovered {} stale webhook events", recovered);
+        }
 
         List<WebhookEvent> events =
                 webhookEventRepository.findTop50ByStatusInOrderByReceivedAtAsc(

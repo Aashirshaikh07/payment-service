@@ -39,6 +39,9 @@ public class WebhookEvent {
     @Column(nullable = false, length = 30)
     private WebhookEventStatus status;
 
+    @Column(name = "processing_at")
+    private Instant processingAt;
+
     @Column(name = "received_at", nullable = false, updatable = false)
     private Instant receivedAt;
 
@@ -84,6 +87,7 @@ public class WebhookEvent {
         }
 
         this.status = WebhookEventStatus.PROCESSING;
+        this.processingAt = Instant.now();
         this.lastError = null;
     }
 
@@ -96,6 +100,7 @@ public class WebhookEvent {
 
         this.status = WebhookEventStatus.PROCESSED;
         this.processedAt = Instant.now();
+        this.processingAt = null;
         this.lastError = null;
     }
 
@@ -107,6 +112,7 @@ public class WebhookEvent {
         }
 
         this.status = WebhookEventStatus.FAILED;
+        this.processingAt = null;
         this.lastError = truncate(reason, MAX_ERROR_LENGTH);
     }
 
