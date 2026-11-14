@@ -1,6 +1,7 @@
 package com.aashir.payment.repository;
 
 import com.aashir.payment.entity.WebhookEvent;
+import com.aashir.payment.entity.WebhookEventStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -8,6 +9,8 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 
 public interface WebhookEventRepository extends JpaRepository<WebhookEvent, String> {
 
@@ -26,5 +29,24 @@ public interface WebhookEventRepository extends JpaRepository<WebhookEvent, Stri
             @Param("eventType") String eventType,
             @Param("rawPayload") String rawPayload,
             @Param("receivedAt") Instant receivedAt
+    );
+
+    List<WebhookEvent> findTop50ByStatusInOrderByReceivedAtAsc(
+            Collection<WebhookEventStatus> statuses
+    );
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("""
+            UPDATE WebhookEvent event
+            SET event.status = :processing,
+                event.lastError = null
+            WHERE event.eventId = :eventId
+            AND event.status IN :claimableStatuses
+            """)
+    int claimForProcessing(
+            @Param("eventId") String eventId,
+            @Param("processing") WebhookEventStatus processing,
+            @Param("claimableStatuses") Collection<WebhookEventStatus> claimableStatuses
     );
 }
