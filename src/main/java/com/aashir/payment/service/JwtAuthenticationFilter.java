@@ -71,5 +71,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     }
 
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        return "/api/webhooks/razorpay".equals(request.getServletPath());
+    }
+
 }
 
