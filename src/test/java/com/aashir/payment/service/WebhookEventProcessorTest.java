@@ -1,4 +1,3 @@
-
 package com.aashir.payment.service;
 
 import com.aashir.payment.entity.WebhookEvent;
@@ -31,7 +30,8 @@ class WebhookEventProcessorTest {
 
     private static final String EVENT_ID = "event_123";
     private static final String EVENT_TYPE = "payment.captured";
-    private static final String RAW_PAYLOAD = "{\"payment\":{\"id\":\"pay_123\"}}";
+    private static final String RAW_PAYLOAD =
+            "{\"payment\":{\"id\":\"pay_123\"}}";
 
     private WebhookEvent createProcessingEvent() {
         WebhookEvent event = WebhookEvent.receive(
@@ -40,40 +40,31 @@ class WebhookEventProcessorTest {
                 RAW_PAYLOAD
         );
 
+        // Simulates the event after a successful database claim.
         event.markProcessing();
+
         return event;
     }
-
 
     @Test
     void processPendingEvents_shouldRecoverStaleProcessingEvents() {
 
         when(webhookEventRepository.recoverStaleProcessingEvents(
-                eq(WebhookEventStatus.PROCESSING),
-                eq(WebhookEventStatus.FAILED),
                 any(),
                 anyString()
         )).thenReturn(2);
 
-        when(webhookEventRepository.findTop50ByStatusInOrderByReceivedAtAsc(
-                anyCollection()
-        )).thenReturn(List.of());
+        when(webhookEventRepository.findEligibleEvents())
+                .thenReturn(List.of());
 
         webhookEventProcessor.processPendingEvents();
 
         verify(webhookEventRepository).recoverStaleProcessingEvents(
-                eq(WebhookEventStatus.PROCESSING),
-                eq(WebhookEventStatus.FAILED),
                 any(),
                 anyString()
         );
 
-        verify(webhookEventRepository).findTop50ByStatusInOrderByReceivedAtAsc(
-                eq(List.of(
-                        WebhookEventStatus.RECEIVED,
-                        WebhookEventStatus.FAILED
-                ))
-        );
+        verify(webhookEventRepository).findEligibleEvents();
 
         verifyNoInteractions(reconciliationService);
     }
@@ -83,15 +74,11 @@ class WebhookEventProcessorTest {
 
         WebhookEvent event = createProcessingEvent();
 
-        when(webhookEventRepository.findTop50ByStatusInOrderByReceivedAtAsc(
-                anyCollection()
-        )).thenReturn(List.of(event));
+        when(webhookEventRepository.findEligibleEvents())
+                .thenReturn(List.of(event));
 
-        when(webhookEventRepository.claimForProcessing(
-                eq(EVENT_ID),
-                eq(WebhookEventStatus.PROCESSING),
-                anyCollection()
-        )).thenReturn(1);
+        when(webhookEventRepository.claimForProcessing(EVENT_ID))
+                .thenReturn(1);
 
         when(webhookEventRepository.findById(EVENT_ID))
                 .thenReturn(Optional.of(event));
@@ -106,8 +93,10 @@ class WebhookEventProcessorTest {
         verify(webhookEventRepository).save(event);
 
         assertEquals(WebhookEventStatus.PROCESSED, event.getStatus());
+        assertEquals(1, event.getAttemptCount());
         assertNotNull(event.getProcessedAt());
         assertNull(event.getProcessingAt());
+        assertNull(event.getNextRetryAt());
         assertNull(event.getLastError());
     }
 
@@ -116,15 +105,11 @@ class WebhookEventProcessorTest {
 
         WebhookEvent event = createProcessingEvent();
 
-        when(webhookEventRepository.findTop50ByStatusInOrderByReceivedAtAsc(
-                anyCollection()
-        )).thenReturn(List.of(event));
+        when(webhookEventRepository.findEligibleEvents())
+                .thenReturn(List.of(event));
 
-        when(webhookEventRepository.claimForProcessing(
-                eq(EVENT_ID),
-                eq(WebhookEventStatus.PROCESSING),
-                anyCollection()
-        )).thenReturn(1);
+        when(webhookEventRepository.claimForProcessing(EVENT_ID))
+                .thenReturn(1);
 
         when(webhookEventRepository.findById(EVENT_ID))
                 .thenReturn(Optional.of(event));
@@ -143,7 +128,10 @@ class WebhookEventProcessorTest {
         verify(webhookEventRepository).save(event);
 
         assertEquals(WebhookEventStatus.FAILED, event.getStatus());
+        assertEquals(1, event.getAttemptCount());
         assertNull(event.getProcessingAt());
+        assertNotNull(event.getNextRetryAt());
+
         assertEquals(
                 "Gateway reconciliation failed",
                 event.getLastError()
@@ -159,26 +147,38 @@ class WebhookEventProcessorTest {
                 RAW_PAYLOAD
         );
 
-        when(webhookEventRepository.findTop50ByStatusInOrderByReceivedAtAsc(
-                anyCollection()
-        )).thenReturn(List.of(candidate));
+        when(webhookEventRepository.findEligibleEvents())
+                .thenReturn(List.of(candidate));
 
-        when(webhookEventRepository.claimForProcessing(
-                eq(EVENT_ID),
-                eq(WebhookEventStatus.PROCESSING),
-                anyCollection()
-        )).thenReturn(0);
+        when(webhookEventRepository.claimForProcessing(EVENT_ID))
+                .thenReturn(0);
 
         webhookEventProcessor.processPendingEvents();
 
-        verify(webhookEventRepository).claimForProcessing(
-                eq(EVENT_ID),
-                eq(WebhookEventStatus.PROCESSING),
-                anyCollection()
-        );
+        verify(webhookEventRepository).claimForProcessing(EVENT_ID);
 
         verify(webhookEventRepository, never()).findById(anyString());
         verify(webhookEventRepository, never()).save(any());
+
+        verifyNoInteractions(reconciliationService);
+
+        assertEquals(0, candidate.getAttemptCount());
+        assertEquals(WebhookEventStatus.RECEIVED, candidate.getStatus());
+    }
+
+    @Test
+    void processPendingEvents_shouldContinueWhenNoEventsAreEligible() {
+
+        when(webhookEventRepository.findEligibleEvents())
+                .thenReturn(List.of());
+
+        webhookEventProcessor.processPendingEvents();
+
+        verify(webhookEventRepository).findEligibleEvents();
+
+        verify(webhookEventRepository, never())
+                .claimForProcessing(anyString());
+
         verifyNoInteractions(reconciliationService);
     }
 }

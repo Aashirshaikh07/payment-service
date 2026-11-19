@@ -22,12 +22,6 @@ public class WebhookEventProcessor {
     private static final String STALE_PROCESSING_REASON =
             "Webhook processing lease expired; event recovered for retry";
 
-    private static final List<WebhookEventStatus> CLAIMABLE_STATUSES =
-            List.of(
-                    WebhookEventStatus.RECEIVED,
-                    WebhookEventStatus.FAILED
-            );
-
     private final WebhookEventRepository webhookEventRepository;
     private final WebhookPaymentReconciliationService reconciliationService;
 
@@ -43,8 +37,6 @@ public class WebhookEventProcessor {
     public void processPendingEvents() {
 
         int recovered = webhookEventRepository.recoverStaleProcessingEvents(
-                WebhookEventStatus.PROCESSING,
-                WebhookEventStatus.FAILED,
                 Instant.now().minusMillis(PROCESSING_LEASE_TIMEOUT_MS),
                 STALE_PROCESSING_REASON
         );
@@ -54,9 +46,8 @@ public class WebhookEventProcessor {
         }
 
         List<WebhookEvent> events =
-                webhookEventRepository.findTop50ByStatusInOrderByReceivedAtAsc(
-                        CLAIMABLE_STATUSES
-                );
+                webhookEventRepository.findEligibleEvents();
+
 
         for (WebhookEvent candidate : events) {
             processEvent(candidate.getEventId());
@@ -65,11 +56,7 @@ public class WebhookEventProcessor {
 
     private void processEvent(String eventId) {
 
-        int claimed = webhookEventRepository.claimForProcessing(
-                eventId,
-                WebhookEventStatus.PROCESSING,
-                CLAIMABLE_STATUSES
-        );
+        int claimed = webhookEventRepository.claimForProcessing(eventId);
 
         if (claimed == 0) {
             return;

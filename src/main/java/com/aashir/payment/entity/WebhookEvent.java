@@ -5,7 +5,9 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 
 @Entity
 @Table(
@@ -14,6 +16,10 @@ import java.time.Instant;
                 @Index(
                         name = "idx_webhook_status_received",
                         columnList = "status, received_at"
+                ),
+                @Index(
+                        name = "idx_webhook_status_retry",
+                        columnList = "status,next_retry_at"
                 )
         }
 )
@@ -24,6 +30,15 @@ public class WebhookEvent {
     private static final int MAX_EVENT_ID_LENGTH = 100;
     private static final int MAX_EVENT_TYPE_LENGTH = 100;
     private static final int MAX_ERROR_LENGTH = 1000;
+    private static final int MAX_ATTEMPTS = 6;
+
+    private static final List<Duration> RETRY_DELAYS = List.of(
+            Duration.ofSeconds(5),
+            Duration.ofSeconds(15),
+            Duration.ofSeconds(45),
+            Duration.ofMinutes(2),
+            Duration.ofMinutes(5)
+    );
 
     @Id
     @Column(name = "event_id", length = MAX_EVENT_ID_LENGTH, nullable = false, updatable = false)
@@ -51,6 +66,12 @@ public class WebhookEvent {
     @Column(name = "last_error", length = MAX_ERROR_LENGTH)
     private String lastError;
 
+    @Column(name = "attempt_count", nullable = false)
+    private int attemptCount;
+
+    @Column(name = "next_retry_at")
+    private Instant nextRetryAt;
+
     public static WebhookEvent receive(
             String eventId,
             String eventType,
@@ -74,7 +95,7 @@ public class WebhookEvent {
         event.rawPayload = rawPayload;
         event.status = WebhookEventStatus.RECEIVED;
         event.receivedAt = Instant.now();
-
+        event.attemptCount = 0;
         return event;
     }
 
@@ -86,8 +107,15 @@ public class WebhookEvent {
             );
         }
 
+        if (attemptCount >= MAX_ATTEMPTS) {
+            throw new IllegalStateException(
+                    "Webhook event has exhausted its processing attempts"
+            );
+        }
+        this.attemptCount++;
         this.status = WebhookEventStatus.PROCESSING;
         this.processingAt = Instant.now();
+        this.nextRetryAt = null;
         this.lastError = null;
     }
 
@@ -101,6 +129,7 @@ public class WebhookEvent {
         this.status = WebhookEventStatus.PROCESSED;
         this.processedAt = Instant.now();
         this.processingAt = null;
+        this.nextRetryAt = null;
         this.lastError = null;
     }
 
@@ -111,9 +140,19 @@ public class WebhookEvent {
             );
         }
 
-        this.status = WebhookEventStatus.FAILED;
         this.processingAt = null;
         this.lastError = truncate(reason, MAX_ERROR_LENGTH);
+
+        if (attemptCount >= MAX_ATTEMPTS) {
+            this.status = WebhookEventStatus.DEAD;
+            this.nextRetryAt = null;
+            return;
+        }
+
+        Duration retryDelay = RETRY_DELAYS.get(attemptCount - 1);
+
+        this.status = WebhookEventStatus.FAILED;
+        this.nextRetryAt = Instant.now().plus(retryDelay);
     }
 
     private static void requireText(String value, String name) {
