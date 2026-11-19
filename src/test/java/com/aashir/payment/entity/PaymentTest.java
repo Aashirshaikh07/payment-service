@@ -24,6 +24,54 @@ class PaymentTest {
     }
 
     @Test
+    void shouldRejectFailureAndNewAttemptsAfterNormalSuccess() {
+        payment.markSuccess("pay_123");
+        payment.markSuccess("pay_123");
+
+        assertThrows(IllegalStateException.class, () -> payment.markSuccess("pay_456"));
+        assertThrows(IllegalStateException.class, payment::markFailed);
+        assertThrows(IllegalStateException.class, () -> payment.startAttempt(PaymentMethod.UPI));
+
+        assertEquals(PaymentStatus.SUCCESS, payment.getStatus());
+        assertEquals("pay_123", payment.getTransactionId());
+        assertTrue(payment.getAttempts().isEmpty());
+    }
+
+    @Test
+    void shouldFailOnlyAfterOpenAttemptIsResolved() {
+        PaymentAttempt attempt = payment.startAttempt(PaymentMethod.UPI);
+
+        assertThrows(IllegalStateException.class, payment::markFailed);
+        assertEquals(PaymentStatus.PENDING, payment.getStatus());
+        assertEquals(PaymentAttemptStatus.CREATED, attempt.getStatus());
+
+        attempt.markFailed("Payment failed");
+        payment.markFailed();
+        payment.markFailed();
+
+        assertThrows(IllegalStateException.class, () -> payment.startAttempt(PaymentMethod.UPI));
+        assertEquals(PaymentStatus.FAILED, payment.getStatus());
+        assertNull(payment.getTransactionId());
+        assertEquals(1, payment.getAttempts().size());
+    }
+
+    @Test
+    void shouldAllowAnotherAttemptAfterFailureWhilePaymentIsPending() {
+        PaymentAttempt first = payment.startAttempt(PaymentMethod.UPI);
+
+        assertThrows(IllegalStateException.class, () -> payment.startAttempt(PaymentMethod.CARD));
+        assertEquals(1, payment.getAttempts().size());
+
+        first.markFailed("Payment failed");
+        PaymentAttempt second = payment.startAttempt(PaymentMethod.CARD);
+
+        assertEquals(PaymentStatus.PENDING, payment.getStatus());
+        assertEquals(2, second.getAttemptNumber());
+        assertSame(payment, second.getPayment());
+        assertEquals(PaymentAttemptStatus.CREATED, second.getStatus());
+    }
+
+    @Test
     void shouldReconcileSuccessfulPaymentWhenPaymentIsPending() {
         payment.reconcileSuccess("pay_123");
 

@@ -24,6 +24,76 @@ class PaymentAttemptTest {
     }
 
     @Test
+    void shouldRequireCheckoutBeforePendingAndKeepGatewayOrderOnReplay() {
+        PaymentAttempt attempt = payment.startAttempt(PaymentMethod.UPI);
+
+        assertThrows(IllegalStateException.class, attempt::markPending);
+        assertEquals(PaymentAttemptStatus.CREATED, attempt.getStatus());
+
+        attempt.attachGatewayOrder("order_123");
+        assertEquals(PaymentAttemptStatus.CHECKOUT_CREATED, attempt.getStatus());
+        attempt.markPending();
+        attempt.markPending();
+        attempt.attachGatewayOrder("order_123");
+
+        assertThrows(IllegalStateException.class, () -> attempt.attachGatewayOrder("order_456"));
+        assertEquals(PaymentAttemptStatus.PENDING, attempt.getStatus());
+        assertEquals("order_123", attempt.getGatewayOrderId());
+        assertFalse(attempt.isTerminal());
+    }
+
+    @Test
+    void shouldKeepNormalSuccessTerminalAndPreserveOriginalGatewayDetails() {
+        PaymentAttempt attempt = payment.startAttempt(PaymentMethod.UPI);
+        attempt.attachGatewayOrder("order_123");
+        attempt.markPending();
+        attempt.markSuccess("pay_123", PaymentMethod.CARD);
+        attempt.markSuccess("pay_123", PaymentMethod.UPI);
+
+        assertThrows(IllegalStateException.class, () -> attempt.markSuccess("pay_456", null));
+        assertThrows(IllegalStateException.class, () -> attempt.markFailed("Late failure"));
+        assertThrows(IllegalStateException.class, attempt::abandon);
+        assertThrows(IllegalStateException.class, attempt::markPending);
+
+        assertEquals(PaymentAttemptStatus.SUCCESS, attempt.getStatus());
+        assertEquals("pay_123", attempt.getGatewayPaymentId());
+        assertEquals(PaymentMethod.CARD, attempt.getPaymentMethod());
+        assertNull(attempt.getFailureReason());
+        assertTrue(attempt.isTerminal());
+    }
+
+    @Test
+    void shouldKeepOriginalFailureReasonOnDuplicateFailure() {
+        PaymentAttempt attempt = payment.startAttempt(PaymentMethod.UPI);
+        attempt.attachGatewayOrder("order_123");
+
+        attempt.markFailed("Original failure");
+        attempt.markFailed("Duplicate failure");
+
+        assertThrows(IllegalStateException.class, attempt::abandon);
+        assertThrows(IllegalStateException.class, attempt::markPending);
+        assertEquals(PaymentAttemptStatus.FAILED, attempt.getStatus());
+        assertEquals("Original failure", attempt.getFailureReason());
+        assertTrue(attempt.isTerminal());
+    }
+
+    @Test
+    void shouldKeepAbandonedAttemptTerminalAfterRepeatedAbandonmentAndLateFailure() {
+        PaymentAttempt attempt = payment.startAttempt(PaymentMethod.UPI);
+        attempt.attachGatewayOrder("order_123");
+        attempt.markPending();
+
+        attempt.abandon();
+        attempt.abandon();
+        attempt.markFailed("Late failure");
+
+        assertThrows(IllegalStateException.class, attempt::markPending);
+        assertEquals(PaymentAttemptStatus.ABANDONED, attempt.getStatus());
+        assertNull(attempt.getFailureReason());
+        assertTrue(attempt.isTerminal());
+    }
+
+    @Test
     void shouldReconcileSuccessfulAttemptWhenAttemptIsCreated() {
         PaymentAttempt attempt = payment.startAttempt(PaymentMethod.UPI);
 
