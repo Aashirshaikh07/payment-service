@@ -179,6 +179,27 @@ public class Payment {
         }
         this.status = PaymentStatus.FAILED;
     }
+    public void reconcileSuccess(String transactionId) {
+        requireText(transactionId, "Transaction ID");
+
+        if (status == PaymentStatus.SUCCESS) {
+            if (!transactionId.equals(this.transactionId)) {
+                throw new IllegalStateException(
+                        "Payment already succeeded with a different transaction ID"
+                );
+            }
+            return;
+        }
+
+        if (status != PaymentStatus.PENDING && status != PaymentStatus.FAILED) {
+            throw new IllegalStateException(
+                    "Cannot reconcile a " + status + " payment"
+            );
+        }
+
+        this.transactionId = transactionId;
+        this.status = PaymentStatus.SUCCESS;
+    }
 
     public boolean isSuccessful() {
         return status == PaymentStatus.SUCCESS;

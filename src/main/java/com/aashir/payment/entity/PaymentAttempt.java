@@ -138,6 +138,38 @@ public class PaymentAttempt {
         this.failureReason = null;
     }
 
+    public void reconcileSuccess(String gatewayPaymentId, PaymentMethod method) {
+        requireText(gatewayPaymentId, "Gateway payment ID");
+
+        if (status == PaymentAttemptStatus.SUCCESS) {
+            if (!gatewayPaymentId.equals(this.gatewayPaymentId)) {
+                throw new IllegalStateException(
+                        "Attempt already succeeded with a different gateway payment ID"
+                );
+            }
+            return;
+        }
+
+        if (status != PaymentAttemptStatus.CREATED
+                && status != PaymentAttemptStatus.CHECKOUT_CREATED
+                && status != PaymentAttemptStatus.PENDING
+                && status != PaymentAttemptStatus.FAILED
+                && status != PaymentAttemptStatus.ABANDONED) {
+            throw new IllegalStateException(
+                    "Cannot reconcile a " + status + " attempt"
+            );
+        }
+
+        this.gatewayPaymentId = gatewayPaymentId;
+
+        if (method != null) {
+            this.paymentMethod = method;
+        }
+
+        this.status = PaymentAttemptStatus.SUCCESS;
+        this.failureReason = null;
+    }
+
     public void markPending() {
         if (status == PaymentAttemptStatus.PENDING) {
             return;
