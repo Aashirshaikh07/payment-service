@@ -14,21 +14,31 @@ import com.aashir.payment.repository.PaymentRepository;
 import org.json.JSONObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.NestedExceptionUtils;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -69,6 +79,12 @@ class WebhookPaymentReconciliationIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private TransactionTemplate transactionTemplate;
 
     @MockitoBean
     private RazorpayGateway gateway;
@@ -140,6 +156,97 @@ class WebhookPaymentReconciliationIntegrationTest {
         assertEquals(firstEventRecord.getId(), assertSingleSuccessEvent(paymentId).getId());
     }
 
+    @ParameterizedTest
+    @CsvSource({
+            "outbox_events, event_type, PAYMENT_SUCCEEDED",
+            "payments, status, SUCCESS"
+    })
+    void shouldRollBackCaptureWhenDatabaseRejectsAWrite(String table, String column, String value)
+            throws Exception {
+        Payment payment = newPayment();
+        PaymentAttempt attempt = payment.startAttempt(PaymentMethod.UPI);
+        attempt.attachGatewayOrder(FIRST_ORDER_ID);
+        attempt.markFailed("Local failure");
+        payment.markFailed();
+        Long paymentId = paymentRepository.saveAndFlush(payment).getId();
+        stubCapture(FIRST_ORDER_ID, FIRST_PAYMENT_ID);
+
+        String event = capturedWebhook("evt_capture", FIRST_ORDER_ID, FIRST_PAYMENT_ID);
+        jdbcTemplate.execute("ALTER TABLE %s ADD CONSTRAINT stage5_reject_write CHECK (%s <> '%s')"
+                .formatted(table, column, value));
+        try {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> reconciliationService.reconcile(CAPTURED_EVENT, event));
+            assertTrue(NestedExceptionUtils.getMostSpecificCause(failure).getMessage()
+                    .contains("stage5_reject_write"), failure::toString);
+
+            Payment storedPayment = paymentRepository.findById(paymentId).orElseThrow();
+            PaymentAttempt storedAttempt = attemptRepository.findByGatewayOrderId(FIRST_ORDER_ID).orElseThrow();
+            assertEquals(PaymentStatus.FAILED, storedPayment.getStatus());
+            assertNull(storedPayment.getTransactionId());
+            assertEquals(PaymentAttemptStatus.FAILED, storedAttempt.getStatus());
+            assertNull(storedAttempt.getGatewayPaymentId());
+            assertEquals("Local failure", storedAttempt.getFailureReason());
+            assertEquals(0, outboxRepository.count());
+        } finally {
+            jdbcTemplate.execute("ALTER TABLE " + table + " DROP CHECK stage5_reject_write");
+        }
+
+        reconciliationService.reconcile(CAPTURED_EVENT, event);
+        assertCapturedPayment(paymentId);
+        assertSingleSuccessEvent(paymentId);
+    }
+
+    @Test
+    void shouldRejectConcurrentFailureUsingAnAttemptLoadedBeforeCapture() throws Exception {
+        String failedPaymentId = "pay_failed";
+        Payment payment = newPayment();
+        payment.startAttempt(PaymentMethod.UPI).attachGatewayOrder(FIRST_ORDER_ID);
+        Long paymentId = paymentRepository.saveAndFlush(payment).getId();
+        stubCapture(FIRST_ORDER_ID, FIRST_PAYMENT_ID);
+        stubGatewayPayment(FIRST_ORDER_ID, failedPaymentId, "failed");
+        String failedEvent = webhook("payment.failed", "evt_failure", FIRST_ORDER_ID, failedPaymentId);
+
+        CountDownLatch attemptLoaded = new CountDownLatch(1);
+        CountDownLatch captureCommitted = new CountDownLatch(1);
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var staleFailure = executor.submit(() -> transactionTemplate.executeWithoutResult(status -> {
+                PaymentAttempt staleAttempt = attemptRepository.findByGatewayOrderId(FIRST_ORDER_ID).orElseThrow();
+                assertEquals(PaymentAttemptStatus.CHECKOUT_CREATED, staleAttempt.getStatus());
+                attemptLoaded.countDown();
+                await(captureCommitted);
+                reconciliationService.reconcile("payment.failed", failedEvent);
+            }));
+
+            await(attemptLoaded);
+            reconciliationService.reconcile(
+                    CAPTURED_EVENT, capturedWebhook("evt_capture", FIRST_ORDER_ID, FIRST_PAYMENT_ID)
+            );
+            captureCommitted.countDown();
+
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> staleFailure.get(30, TimeUnit.SECONDS));
+            assertInstanceOf(OptimisticLockingFailureException.class, failure.getCause());
+        } finally {
+            captureCommitted.countDown();
+            executor.shutdownNow();
+        }
+
+        reconciliationService.reconcile("payment.failed", failedEvent);
+        assertCapturedPayment(paymentId);
+        assertSingleSuccessEvent(paymentId);
+    }
+
+    private void await(CountDownLatch latch) {
+        try {
+            assertTrue(latch.await(30, TimeUnit.SECONDS), "Timed out waiting for the other transaction");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            fail("Interrupted while waiting for the other transaction", exception);
+        }
+    }
+
     private Payment newPayment() {
         return Payment.create(101L, 1L, AMOUNT, "INR", "ORDER-101");
     }
@@ -164,6 +271,10 @@ class WebhookPaymentReconciliationIntegrationTest {
     }
 
     private void stubCapture(String orderId, String paymentId) throws Exception {
+        stubGatewayPayment(orderId, paymentId, "captured");
+    }
+
+    private void stubGatewayPayment(String orderId, String paymentId, String status) throws Exception {
         com.razorpay.Payment gatewayPayment = mock(com.razorpay.Payment.class);
         when(gateway.fetchPayment(paymentId)).thenReturn(gatewayPayment);
         when(gatewayPayment.toJson()).thenReturn(new JSONObject()
@@ -171,14 +282,18 @@ class WebhookPaymentReconciliationIntegrationTest {
                 .put("order_id", orderId)
                 .put("amount", 250000)
                 .put("currency", "INR")
-                .put("status", "captured"));
+                .put("status", status));
     }
 
     private String capturedWebhook(String eventId, String orderId, String paymentId) {
+        return webhook(CAPTURED_EVENT, eventId, orderId, paymentId);
+    }
+
+    private String webhook(String eventType, String eventId, String orderId, String paymentId) {
         return """
-                {"id":"%s","event":"payment.captured","payload":{"payment":{"entity":{
+                {"id":"%s","event":"%s","payload":{"payment":{"entity":{
                   "id":"%s","order_id":"%s"
                 }}}}
-                """.formatted(eventId, paymentId, orderId);
+                """.formatted(eventId, eventType, paymentId, orderId);
     }
 }
