@@ -107,13 +107,6 @@ public class WebhookPaymentReconciliationService {
                     "Razorpay payment is not in captured status"
             );
         }
-
-        if (PAYMENT_FAILED.equals(eventType)
-                && !"failed".equalsIgnoreCase(gatewayStatus)) {
-            throw new IllegalStateException(
-                    "Razorpay payment is not in failed status"
-            );
-        }
     }
 
     private void reconcileCapturedPayment(JSONObject gatewayPayment) {
@@ -163,6 +156,19 @@ public class WebhookPaymentReconciliationService {
                     gatewayPayment.getLong("amount"),
                     gatewayPayment.getString("currency")
             );
+
+            String gatewayStatus = gatewayPayment.optString("status", null);
+            if ("captured".equalsIgnoreCase(gatewayStatus)
+                    && attempt.isSuccessful()
+                    && gatewayPayment.getString("id").equals(attempt.getGatewayPaymentId())) {
+                return;
+            }
+            if (!"failed".equalsIgnoreCase(gatewayStatus)) {
+                throw new IllegalStateException("Razorpay payment is not in failed status");
+            }
+            if (attempt.isTerminal()) {
+                return;
+            }
 
             attempt.markFailed(failureReason);
 

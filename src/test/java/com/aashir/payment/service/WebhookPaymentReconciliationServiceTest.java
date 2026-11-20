@@ -3,12 +3,19 @@ package com.aashir.payment.service;
 
 import com.aashir.payment.entity.Payment;
 import com.aashir.payment.entity.PaymentAttempt;
+import com.aashir.payment.entity.PaymentAttemptStatus;
+import com.aashir.payment.entity.PaymentMethod;
+import com.aashir.payment.entity.PaymentStatus;
 import com.aashir.payment.gateway.RazorpayGateway;
 import com.aashir.payment.repository.PaymentAttemptRepository;
-import com.aashir.payment.service.OutboxService;
 import com.razorpay.RazorpayException;
+import org.json.JSONException;
+import org.json.JSONObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.SimpleTransactionStatus;
@@ -18,6 +25,8 @@ import java.math.BigDecimal;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -67,9 +76,22 @@ class WebhookPaymentReconciliationServiceTest {
                 .thenReturn(250000L);
     }
 
-    @Test
-    void shouldReconcileCapturedPaymentAndPublishSuccessEvent()
-            throws Exception {
+    @ParameterizedTest
+    @EnumSource(value = PaymentAttemptStatus.class, names = {"CHECKOUT_CREATED", "FAILED", "ABANDONED"})
+    void shouldReconcileVerifiedCaptureAndRecordSuccess(PaymentAttemptStatus localStatus)
+            throws RazorpayException, JSONException {
+        Payment localPayment = Payment.create(101L, 1L, new BigDecimal("2500.00"), "INR", "ORDER-101");
+        PaymentAttempt localAttempt = localPayment.startAttempt(PaymentMethod.UPI);
+        localAttempt.attachGatewayOrder("order_123");
+
+        switch (localStatus) {
+            case FAILED -> localAttempt.markFailed("Local failure");
+            case ABANDONED -> localAttempt.abandon();
+            default -> { }
+        }
+        if (localAttempt.isTerminal()) {
+            localPayment.markFailed();
+        }
 
         String webhookPayload = """
                 {
@@ -99,24 +121,22 @@ class WebhookPaymentReconciliationServiceTest {
         when(razorpayGateway.fetchPayment("pay_123"))
                 .thenReturn(gatewayPayment);
         when(gatewayPayment.toJson()).thenReturn(
-                new org.json.JSONObject(gatewayResponse)
+                new JSONObject(gatewayResponse)
         );
 
         when(paymentAttemptRepository.findByGatewayOrderId("order_123"))
-                .thenReturn(Optional.of(attempt));
+                .thenReturn(Optional.of(localAttempt));
 
-        assertDoesNotThrow(() ->
-                reconciliationService.reconcile(
-                        "payment.captured",
-                        webhookPayload
-                )
-        );
+        reconciliationService.reconcile("payment.captured", webhookPayload);
 
-        verify(attempt).reconcileSuccess("pay_123",
-                com.aashir.payment.entity.PaymentMethod.CARD);
-        verify(payment).reconcileSuccess("pay_123");
-        verify(paymentAttemptRepository).save(attempt);
-        verify(outboxService).savePaymentSucceeded(payment);
+        assertEquals(PaymentStatus.SUCCESS, localPayment.getStatus());
+        assertEquals("pay_123", localPayment.getTransactionId());
+        assertEquals(PaymentAttemptStatus.SUCCESS, localAttempt.getStatus());
+        assertEquals("pay_123", localAttempt.getGatewayPaymentId());
+        assertEquals(PaymentMethod.CARD, localAttempt.getPaymentMethod());
+        assertNull(localAttempt.getFailureReason());
+        verify(paymentAttemptRepository).save(localAttempt);
+        verify(outboxService).savePaymentSucceeded(localPayment);
     }
 
     @Test
@@ -151,7 +171,7 @@ class WebhookPaymentReconciliationServiceTest {
         when(razorpayGateway.fetchPayment("pay_123"))
                 .thenReturn(gatewayPayment);
         when(gatewayPayment.toJson()).thenReturn(
-                new org.json.JSONObject(gatewayResponse)
+                new JSONObject(gatewayResponse)
         );
 
         when(paymentAttemptRepository.findByGatewayOrderId("order_123"))
@@ -167,6 +187,62 @@ class WebhookPaymentReconciliationServiceTest {
         verify(attempt).markFailed("Payment declined");
         verify(paymentAttemptRepository).save(attempt);
         verify(outboxService, never()).savePaymentSucceeded(any());
+    }
+
+    @Test
+    void shouldApplyFailureOnlyOnceWhenWebhookIsRepeated() throws RazorpayException, JSONException {
+        Payment localPayment = Payment.create(101L, 1L, new BigDecimal("2500.00"), "INR", "ORDER-101");
+        PaymentAttempt localAttempt = localPayment.startAttempt(PaymentMethod.UPI);
+        localAttempt.attachGatewayOrder("order_123");
+        stubFailureWebhook(localAttempt, "pay_123", "failed", "Original failure");
+
+        reconciliationService.reconcile("payment.failed", failureWebhook("pay_123"));
+        stubFailureWebhook(localAttempt, "pay_123", "failed", "Repeated failure");
+        reconciliationService.reconcile("payment.failed", failureWebhook("pay_123"));
+
+        assertEquals(PaymentStatus.PENDING, localPayment.getStatus());
+        assertEquals(PaymentAttemptStatus.FAILED, localAttempt.getStatus());
+        assertEquals("Original failure", localAttempt.getFailureReason());
+        verify(paymentAttemptRepository).save(localAttempt);
+        verifyNoInteractions(outboxService);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"pay_captured, captured", "pay_declined, failed"})
+    void shouldIgnoreFailureWebhookAfterCapture(String failureId, String gatewayStatus)
+            throws RazorpayException, JSONException {
+        Payment localPayment = Payment.create(101L, 1L, new BigDecimal("2500.00"), "INR", "ORDER-101");
+        PaymentAttempt localAttempt = localPayment.startAttempt(PaymentMethod.UPI);
+        localAttempt.attachGatewayOrder("order_123");
+        localAttempt.markSuccess("pay_captured", PaymentMethod.UPI);
+        localPayment.markSuccess("pay_captured");
+        stubFailureWebhook(localAttempt, failureId, gatewayStatus, "Late failure");
+
+        reconciliationService.reconcile("payment.failed", failureWebhook(failureId));
+
+        assertEquals(PaymentStatus.SUCCESS, localPayment.getStatus());
+        assertEquals("pay_captured", localPayment.getTransactionId());
+        assertEquals(PaymentAttemptStatus.SUCCESS, localAttempt.getStatus());
+        assertEquals("pay_captured", localAttempt.getGatewayPaymentId());
+        assertNull(localAttempt.getFailureReason());
+        verify(paymentAttemptRepository, never()).save(any());
+        verifyNoInteractions(outboxService);
+    }
+
+    @Test
+    void shouldRejectFailureStatusMismatchForAnOpenAttempt() throws RazorpayException, JSONException {
+        Payment localPayment = Payment.create(101L, 1L, new BigDecimal("2500.00"), "INR", "ORDER-101");
+        PaymentAttempt localAttempt = localPayment.startAttempt(PaymentMethod.UPI);
+        localAttempt.attachGatewayOrder("order_123");
+        stubFailureWebhook(localAttempt, "pay_123", "captured", "Late failure");
+
+        assertThrows(IllegalStateException.class,
+                () -> reconciliationService.reconcile("payment.failed", failureWebhook("pay_123")));
+
+        assertEquals(PaymentStatus.PENDING, localPayment.getStatus());
+        assertEquals(PaymentAttemptStatus.CHECKOUT_CREATED, localAttempt.getStatus());
+        verify(paymentAttemptRepository, never()).save(any());
+        verifyNoInteractions(outboxService);
     }
 
     @Test
@@ -234,5 +310,27 @@ class WebhookPaymentReconciliationServiceTest {
         );
 
         verifyNoInteractions(razorpayGateway);
+    }
+
+    private void stubFailureWebhook(PaymentAttempt localAttempt, String paymentId,
+                                    String status, String failureReason) throws RazorpayException, JSONException {
+        when(paymentAttemptRepository.findByGatewayOrderId("order_123"))
+                .thenReturn(Optional.of(localAttempt));
+        when(razorpayGateway.fetchPayment(paymentId)).thenReturn(gatewayPayment);
+        when(gatewayPayment.toJson()).thenReturn(new JSONObject()
+                .put("id", paymentId)
+                .put("order_id", "order_123")
+                .put("amount", 250000)
+                .put("currency", "INR")
+                .put("status", status)
+                .put("error_description", failureReason));
+    }
+
+    private String failureWebhook(String paymentId) {
+        return """
+                {"event":"payment.failed","payload":{"payment":{"entity":{
+                  "id":"%s","order_id":"order_123"
+                }}}}
+                """.formatted(paymentId);
     }
 }
