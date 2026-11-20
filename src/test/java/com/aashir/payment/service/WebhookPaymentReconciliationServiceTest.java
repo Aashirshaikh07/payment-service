@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.SimpleTransactionStatus;
@@ -75,9 +76,22 @@ class WebhookPaymentReconciliationServiceTest {
                 .thenReturn(250000L);
     }
 
-    @Test
-    void shouldReconcileCapturedPaymentAndPublishSuccessEvent()
-            throws Exception {
+    @ParameterizedTest
+    @EnumSource(value = PaymentAttemptStatus.class, names = {"CHECKOUT_CREATED", "FAILED", "ABANDONED"})
+    void shouldReconcileVerifiedCaptureAndRecordSuccess(PaymentAttemptStatus localStatus)
+            throws RazorpayException, JSONException {
+        Payment localPayment = Payment.create(101L, 1L, new BigDecimal("2500.00"), "INR", "ORDER-101");
+        PaymentAttempt localAttempt = localPayment.startAttempt(PaymentMethod.UPI);
+        localAttempt.attachGatewayOrder("order_123");
+
+        switch (localStatus) {
+            case FAILED -> localAttempt.markFailed("Local failure");
+            case ABANDONED -> localAttempt.abandon();
+            default -> { }
+        }
+        if (localAttempt.isTerminal()) {
+            localPayment.markFailed();
+        }
 
         String webhookPayload = """
                 {
@@ -111,19 +125,18 @@ class WebhookPaymentReconciliationServiceTest {
         );
 
         when(paymentAttemptRepository.findByGatewayOrderId("order_123"))
-                .thenReturn(Optional.of(attempt));
+                .thenReturn(Optional.of(localAttempt));
 
-        assertDoesNotThrow(() ->
-                reconciliationService.reconcile(
-                        "payment.captured",
-                        webhookPayload
-                )
-        );
+        reconciliationService.reconcile("payment.captured", webhookPayload);
 
-        verify(attempt).reconcileSuccess("pay_123", PaymentMethod.CARD);
-        verify(payment).reconcileSuccess("pay_123");
-        verify(paymentAttemptRepository).save(attempt);
-        verify(outboxService).savePaymentSucceeded(payment);
+        assertEquals(PaymentStatus.SUCCESS, localPayment.getStatus());
+        assertEquals("pay_123", localPayment.getTransactionId());
+        assertEquals(PaymentAttemptStatus.SUCCESS, localAttempt.getStatus());
+        assertEquals("pay_123", localAttempt.getGatewayPaymentId());
+        assertEquals(PaymentMethod.CARD, localAttempt.getPaymentMethod());
+        assertNull(localAttempt.getFailureReason());
+        verify(paymentAttemptRepository).save(localAttempt);
+        verify(outboxService).savePaymentSucceeded(localPayment);
     }
 
     @Test

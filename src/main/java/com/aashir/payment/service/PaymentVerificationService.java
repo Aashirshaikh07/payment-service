@@ -73,11 +73,12 @@ public class PaymentVerificationService {
         }
 
         try{
-            com.razorpay.Payment getewayPayment =
+            com.razorpay.Payment gatewayPayment =
                     razorpayGateway.fetchPayment(request.razorpayPaymentId());
 
-            JSONObject details = getewayPayment.toJson();
+            JSONObject details = gatewayPayment.toJson();
 
+            String gatewayPaymentId = details.optString("id", "");
             String gatewayOrderId = details.optString("order_id", "");
             String gatewayStatus = details.optString("status", "");
             String gatewayCurrency = details.optString("currency", "");
@@ -85,7 +86,8 @@ public class PaymentVerificationService {
 
             long expectedAmount = razorpayGateway.toPaise(payment.getAmount());
 
-            if (!request.razorpayOrderId().equals(gatewayOrderId)
+            if (!request.razorpayPaymentId().equals(gatewayPaymentId)
+                    || !request.razorpayOrderId().equals(gatewayOrderId)
                     || expectedAmount != gatewayAmount
                     || !payment.getCurrency().equalsIgnoreCase(gatewayCurrency)) {
                 throw new IllegalArgumentException(
@@ -94,10 +96,8 @@ public class PaymentVerificationService {
             }
 
             if("captured".equalsIgnoreCase(gatewayStatus)){
-                attempt.markSuccess(
-                        request.razorpayPaymentId(),attempt.getPaymentMethod()
-                );
-                payment.markSuccess(request.razorpayPaymentId());
+                attempt.reconcileSuccess(gatewayPaymentId, null);
+                payment.reconcileSuccess(gatewayPaymentId);
 
                 paymentAttemptRepository.save(attempt);
                 paymentRepository.save(payment);
