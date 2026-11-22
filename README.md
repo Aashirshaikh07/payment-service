@@ -33,3 +33,39 @@ A Razorpay `payment.failed` webhook can mark an individual **attempt** as failed
 Both outgoing topics use the **order ID as the Kafka message key**. The Outbox publisher reuses the stored event ID when it retries a send, so the order service can recognize a replay. Since success and failure travel on separate topics, they can arrive in either order.
 
 [Order consumer](src/main/java/com/aashir/payment/kafka/OrderKafkaConsumer.java) · [Outbox service](src/main/java/com/aashir/payment/service/OutboxService.java) · [Expiry service](src/main/java/com/aashir/payment/service/PaymentExpiryService.java)
+
+## How It Works
+
+The payment starts when the order service publishes an order creation event. Checkout verification and Razorpay webhooks give the Payment Service two ways to discover a capture. Both paths verify the payment with Razorpay before recording success.
+
+```mermaid
+flowchart LR
+    subgraph Checkout
+        A["Order created"] --> B["Create pending payment"]
+        B --> C["Start checkout and create Razorpay order"]
+    end
+
+    subgraph Verification
+        C --> D["Checkout callback"]
+        C --> E["Razorpay webhook"]
+        E --> F["Verify signature and store event"]
+        D --> G["Look up payment in Razorpay"]
+        F -->|Scheduled processing| G
+        B --> H["Check pending payment for expiry"]
+    end
+
+    subgraph Delivery
+        G -->|Capture confirmed| I["Save success and Outbox event"]
+        H -->|Expiry confirmed| J["Save failure and Outbox event"]
+        I --> K["Outbox publisher"]
+        J --> K
+        K --> L["Kafka"]
+        L --> M["Order service"]
+    end
+```
+
+1. **Start checkout.** The client calls `POST /payments/{orderId}/checkout` with an `Idempotency-Key`. The service creates a payment attempt and attaches the Razorpay order ID. Repeating a completed checkout request with the same key returns the existing checkout details.
+2. **Verify the result.** The client can call `POST /payments/verify` after checkout. Razorpay can also send a signed webhook to `POST /api/webhooks/razorpay`. The webhook endpoint stores the event, and a scheduled worker processes it asynchronously.
+3. **Save the outcome and publish it.** A verified capture updates the payment and attempt to `SUCCESS` and saves the success event in the same database transaction. The expiry path checks Razorpay before recording a failure. The Outbox publisher then sends the stored event to Kafka.
+
+[Checkout service](src/main/java/com/aashir/payment/service/CheckoutService.java) · [Webhook processor](src/main/java/com/aashir/payment/service/WebhookEventProcessor.java) · [Outbox publisher](src/main/java/com/aashir/payment/service/OutboxPublisher.java)
