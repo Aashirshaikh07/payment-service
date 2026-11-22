@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="718" viewBox="0 0 960 718" role="img" aria-labelledby="flow-title flow-description">
+  <title id="flow-title">Payment processing flow</title>
+  <desc id="flow-description">An order creates a pending payment and a Razorpay checkout. The checkout callback or a stored webhook leads to Razorpay verification. A separate expiry flow checks Razorpay before failing a pending payment. Both outcomes save an Outbox event for Kafka delivery to the order service.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#566d8b"/>
+    </marker>
+  </defs>
+  <rect x="1" y="1" width="958" height="716" rx="20" fill="#fafcff" stroke="#d8e1ec"/>
+  <g font-family="system-ui, Arial, sans-serif">
+    <text x="25" y="47" fill="#172b45" font-size="27" font-weight="700" text-anchor="start">Payment processing flow</text>
+    <rect x="24" y="70" width="912" height="116" rx="16" fill="#edf4ff" stroke="#c5d6ef"/>
+    <text x="45" y="98" fill="#254e84" font-size="17" font-weight="700" text-anchor="start">Checkout</text>
+    <rect x="24" y="212" width="912" height="191" rx="16" fill="#f0f5fc" stroke="#ccd9e9"/>
+    <text x="45" y="240" fill="#324f75" font-size="17" font-weight="700" text-anchor="start">Verification and expiry</text>
+    <rect x="24" y="420" width="912" height="119" rx="16" fill="#f2f6fa" stroke="#cfdae7"/>
+    <text x="45" y="448" fill="#324f75" font-size="17" font-weight="700" text-anchor="start">Transactional Outbox</text>
+    <rect x="24" y="577" width="912" height="117" rx="16" fill="#f2eefa" stroke="#d9cdee"/>
+    <text x="45" y="605" fill="#594482" font-size="17" font-weight="700" text-anchor="start">Kafka delivery</text>
+    <g fill="none" stroke="#566d8b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 289 140 H 352" marker-end="url(#arrow)"/>
+      <path d="M 603 140 H 666" marker-end="url(#arrow)"/>
+      <path d="M 794 166 V 200 H 562 V 246 H 157 V 257" marker-end="url(#arrow)"/>
+      <path d="M 411 246 V 257" marker-end="url(#arrow)"/>
+      <path d="M 157 310 V 321 H 294 V 331" marker-end="url(#arrow)"/>
+      <path d="M 411 310 V 321 H 294"/>
+      <path d="M 778 310 V 331" marker-end="url(#arrow)"/>
+      <path d="M 294 388 V 461" marker-end="url(#arrow)"/>
+      <path d="M 778 388 V 461" marker-end="url(#arrow)"/>
+      <path d="M 778 517 V 556 H 166 V 619" marker-end="url(#arrow)"/>
+      <path d="M 294 517 V 556"/>
+      <path d="M 289 650 H 352" marker-end="url(#arrow)"/>
+      <path d="M 603 650 H 666" marker-end="url(#arrow)"/>
+    </g>
+    <rect x="44" y="113" width="244" height="53" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="166" y="135" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Order created</text>
+    <text x="166" y="154" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Kafka · order-events</text>
+    <rect x="358" y="113" width="244" height="53" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="480" y="135" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Pending payment</text>
+    <text x="480" y="154" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Create the local payment</text>
+    <rect x="672" y="113" width="244" height="53" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="794" y="135" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Razorpay checkout</text>
+    <text x="794" y="154" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Create a gateway order</text>
+    <rect x="44" y="259" width="226" height="51" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="157" y="281" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Checkout verification</text>
+    <text x="157" y="300" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Client callback</text>
+    <rect x="298" y="259" width="226" height="51" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="411" y="281" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Razorpay webhook</text>
+    <text x="411" y="300" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Verify signature and store event</text>
+    <rect x="641" y="259" width="275" height="51" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="778.5" y="281" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Pending payment due for expiry</text>
+    <text x="778.5" y="300" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Scheduled expiry check</text>
+    <rect x="113" y="333" width="362" height="55" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="294" y="355" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Look up payment in Razorpay</text>
+    <text x="294" y="374" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Verify capture before recording success</text>
+    <rect x="641" y="333" width="275" height="55" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="778.5" y="355" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Check Razorpay order payments</text>
+    <text x="778.5" y="374" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Defer expiry if authorized or captured</text>
+    <rect x="113" y="463" width="362" height="54" rx="10" fill="#e9f8f0" stroke="#8abea5"/>
+    <text x="294" y="485" fill="#17573f" font-size="16" font-weight="650" text-anchor="middle">Capture confirmed</text>
+    <text x="294" y="504" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Save SUCCESS and its Outbox event</text>
+    <rect x="641" y="463" width="275" height="54" rx="10" fill="#fff3e5" stroke="#d9ab74"/>
+    <text x="778.5" y="485" fill="#824a21" font-size="16" font-weight="650" text-anchor="middle">Expiry confirmed</text>
+    <text x="778.5" y="504" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Save FAILED and its Outbox event</text>
+    <rect x="44" y="621" width="244" height="54" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="166" y="643" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Outbox publisher</text>
+    <text x="166" y="662" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Send the stored event</text>
+    <rect x="358" y="621" width="244" height="54" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="480" y="643" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Kafka</text>
+    <text x="480" y="662" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">payment-succeeded · payment-failed</text>
+    <rect x="672" y="621" width="244" height="54" rx="10" fill="#ffffff" stroke="#aebfd4"/>
+    <text x="794" y="643" fill="#162c46" font-size="16" font-weight="650" text-anchor="middle">Order service</text>
+    <text x="794" y="662" fill="#3c526b" font-size="13" font-weight="400" text-anchor="middle">Consume the payment outcome</text>
+  </g>
+</svg>

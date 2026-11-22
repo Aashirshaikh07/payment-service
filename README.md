@@ -38,31 +38,7 @@ Both outgoing topics use the **order ID as the Kafka message key**. The Outbox p
 
 The payment starts when the order service publishes an order creation event. Checkout verification and Razorpay webhooks give the Payment Service two ways to discover a capture. Both paths verify the payment with Razorpay before recording success.
 
-```mermaid
-flowchart LR
-    subgraph Checkout
-        A["Order created"] --> B["Create pending payment"]
-        B --> C["Start checkout and create Razorpay order"]
-    end
-
-    subgraph Verification
-        C --> D["Checkout callback"]
-        C --> E["Razorpay webhook"]
-        E --> F["Verify signature and store event"]
-        D --> G["Look up payment in Razorpay"]
-        F -->|Scheduled processing| G
-        B --> H["Check pending payment for expiry"]
-    end
-
-    subgraph Delivery
-        G -->|Capture confirmed| I["Save success and Outbox event"]
-        H -->|Expiry confirmed| J["Save failure and Outbox event"]
-        I --> K["Outbox publisher"]
-        J --> K
-        K --> L["Kafka"]
-        L --> M["Order service"]
-    end
-```
+![Payment processing flow from checkout and Razorpay verification through the transactional Outbox to Kafka and the order service](docs/images/payment-processing-flow.svg)
 
 1. **Start checkout.** The client calls `POST /payments/{orderId}/checkout` with an `Idempotency-Key`. The service creates a payment attempt and attaches the Razorpay order ID. Repeating a completed checkout request with the same key returns the existing checkout details.
 2. **Verify the result.** The client can call `POST /payments/verify` after checkout. Razorpay can also send a signed webhook to `POST /api/webhooks/razorpay`. The webhook endpoint stores the event, and a scheduled worker processes it asynchronously.
