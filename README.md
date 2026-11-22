@@ -72,3 +72,27 @@ A pending payment becomes eligible for local expiry after **30 minutes**. Before
 Razorpay can still confirm a capture after that check. When it does, the Payment Service reconciles the payment and attempt to `SUCCESS`. If the order service has already cancelled the order and released its stock, it preserves `CANCELLED` and saves one `late_payment_reviews` record for the order and payment. That record gives an operator a way to follow up on the captured funds.
 
 [Webhook retry rules](src/main/java/com/aashir/payment/entity/WebhookEvent.java) · [Expiry service](src/main/java/com/aashir/payment/service/PaymentExpiryService.java) · [Order consumer](https://github.com/Aashirshaikh07/e-commerce-spring-boot/blob/main/src/main/java/com/aashir/ecommerce/kafka/PaymentKafkaConsumer.java)
+
+## Tech Stack & Project Structure
+
+| Technology | Role in the service |
+|---|---|
+| Java 21 and Maven Wrapper | Build and run the service with the repository’s Maven version. |
+| Spring Boot 4.1.1 and Spring Security | Serve the checkout and webhook endpoints, authenticate clients, and run scheduled workers. |
+| Razorpay Java SDK | Create gateway orders and fetch payment details for verification and reconciliation. |
+| Spring Data JPA and MySQL | Store payments, checkout requests, webhook events, and Outbox records. |
+| Spring for Apache Kafka | Consume order creation events and publish payment outcomes. |
+| JUnit, Mockito, and Testcontainers | Test payment state transitions and verify transaction behavior against MySQL. |
+
+### Where to start in the code
+
+| Location | What you’ll find |
+|---|---|
+| `controller/` | `PaymentController` handles checkout and verification requests. `RazorpayWebhookController` receives signed webhooks. |
+| `gateway/` | `RazorpayGateway` wraps the SDK. `RazorpayWebhookSignatureVerifier` validates the signature against the original request body. |
+| `service/` | Checkout, verification, expiry, and reconciliation. Start with `CheckoutService`, `WebhookEventProcessor`, or `OutboxPublisher` depending on which part of the flow you’re tracing. |
+| `entity/` and `repository/` | Payment and attempt state rules, plus the queries that claim webhook events and retrieve pending Outbox records. |
+| `event/` and `kafka/` | The Kafka event payloads and `OrderKafkaConsumer`, which starts the payment lifecycle. |
+| `src/test/` | Unit and MySQL integration tests covering replay, late capture, and rollback. |
+
+[Build configuration](pom.xml) · [Source tree](src)
