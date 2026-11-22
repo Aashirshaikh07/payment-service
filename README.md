@@ -47,3 +47,28 @@ The payment starts when the order service publishes an order creation event. Che
 3. **Save the outcome and publish it.** When Razorpay confirms a capture, the service updates the payment and attempt to `SUCCESS` and records the success event in the same MySQL transaction. The expiry path also checks Razorpay before closing a pending payment. If expiry goes ahead, the failure and its event are saved together. The Outbox publisher sends stored events to Kafka and marks each row published after Kafka acknowledges the send. If Kafka is unavailable, the row stays pending and the publisher can try again on a later run.
 
 [Checkout service](src/main/java/com/aashir/payment/service/CheckoutService.java) · [Webhook processor](src/main/java/com/aashir/payment/service/WebhookEventProcessor.java) · [Outbox publisher](src/main/java/com/aashir/payment/service/OutboxPublisher.java)
+
+## Reliability
+
+A payment can be reported by the browser callback, a Razorpay webhook, or both. The service uses the current Razorpay status to decide what happened and MySQL to track what it has already processed.
+
+| Situation | What the service does |
+|---|---|
+| Razorpay retries the same webhook delivery | Acknowledges the duplicate and keeps the original `webhook_events` row, using `x-razorpay-event-id` to identify it. |
+| A new webhook reports a capture already recorded | Preserves the successful payment and attempt. A unique Outbox key keeps one success record per payment. |
+| A write fails during capture reconciliation | Rolls back the payment, attempt, and success Outbox entry together. The webhook can be retried. |
+| Kafka accepts an event before the publisher records completion | The publisher may send it again with the same `eventId`, which the order service uses to recognize a replay. |
+
+### Webhook retries and recovery
+
+The webhook endpoint stores a signed event before acknowledging it. A scheduled worker scans for eligible events every **5 seconds** by default. After a failed attempt, the next retry becomes eligible after **5 seconds, 15 seconds, 45 seconds, 2 minutes, or 5 minutes**, depending on the attempt number. If the sixth attempt fails, the event is marked `DEAD` and its last error remains available for investigation.
+
+The worker also recovers events that have been stuck in `PROCESSING` for more than **10 minutes**. This covers a restart or crash after an event was claimed. The recovered event follows the same retry rules.
+
+### Expiry and late capture
+
+A pending payment becomes eligible for local expiry after **30 minutes**. Before expiring it, the service checks Razorpay for each linked checkout order. If Razorpay reports an `authorized` or `captured` payment, or the lookup fails, the service defers expiry.
+
+Razorpay can still confirm a capture after that check. When it does, the Payment Service reconciles the payment and attempt to `SUCCESS`. If the order service has already cancelled the order and released its stock, it preserves `CANCELLED` and saves one `late_payment_reviews` record for the order and payment. That record gives an operator a way to follow up on the captured funds.
+
+[Webhook retry rules](src/main/java/com/aashir/payment/entity/WebhookEvent.java) · [Expiry service](src/main/java/com/aashir/payment/service/PaymentExpiryService.java) · [Order consumer](https://github.com/Aashirshaikh07/e-commerce-spring-boot/blob/main/src/main/java/com/aashir/ecommerce/kafka/PaymentKafkaConsumer.java)
