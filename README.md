@@ -12,87 +12,158 @@
   <img src="https://img.shields.io/badge/MySQL-Database-4479A1?logo=mysql&logoColor=white" alt="MySQL" />
 </p>
 
+<p align="center">
+  <a href="#how-it-works">Flow</a> ·
+  <a href="#http-api">HTTP API</a> ·
+  <a href="#payment-events">Events</a> ·
+  <a href="#reliability">Reliability</a> ·
+  <a href="#tech-stack--project-structure">Code</a> ·
+  <a href="#running-locally">Local setup</a> ·
+  <a href="#testing">Testing</a>
+</p>
+
 ---
 
 The Payment Service owns the payment lifecycle for e-commerce orders. It creates Razorpay checkout orders, verifies callbacks and webhooks, and publishes payment outcomes to the order service through Kafka. Payment state changes and their outgoing events are recorded together in MySQL using a transactional outbox.
 
-The service handles cases where Razorpay confirms a capture after a payment has expired locally. It verifies the capture with Razorpay, reconciles the payment and its attempt to `SUCCESS`, and records a single success outbox entry even when the webhook is replayed.
-
-## Payment Events
-
-The Payment Service consumes order creation events from Kafka and publishes payment outcomes back to the order service. Razorpay webhooks arrive over HTTP. The service verifies them before updating payment state and recording the corresponding Outbox event.
-
-| Direction | Kafka topic | Event | When it’s used |
-|---|---|---|---|
-| Consumes | `order-events` | `OrderCreatedKafkaEvent` | Creates a `PENDING` payment for a new order. A replay reuses the payment already associated with that order. |
-| Publishes | `payment-succeeded` | `PaymentSucceededEvent` | Razorpay confirms a capture through webhook reconciliation or checkout verification. The event includes `eventId`, `paymentId`, `orderId`, and `amount`. |
-| Publishes | `payment-failed` | `PaymentFailedEvent` | A pending payment expires locally after a check with Razorpay. The event includes `eventId`, `paymentId`, `orderId`, and `reason`. |
-
-A Razorpay `payment.failed` webhook can mark an individual **attempt** as failed. The local expiry flow marks the **payment** as failed and queues the Kafka event the order service uses to cancel a pending order.
-
-Both outgoing topics use the **order ID as the Kafka message key**. The Outbox publisher reuses the stored event ID when it retries a send, so the order service can recognize a replay. Since success and failure travel on separate topics, they can arrive in either order.
-
-[Order consumer](src/main/java/com/aashir/payment/kafka/OrderKafkaConsumer.java) · [Outbox service](src/main/java/com/aashir/payment/service/OutboxService.java) · [Expiry service](src/main/java/com/aashir/payment/service/PaymentExpiryService.java)
+> **Verified in Razorpay Test Mode.** With `POST /payments/verify` blocked in the browser, ngrok showed HTTP `200` for the capture webhook and the order reached `CONFIRMED`. [Reproduce the test](#verify-a-webhook-in-razorpay-test-mode)
 
 ## How It Works
 
-The payment starts when the order service publishes an order creation event. Checkout verification and Razorpay webhooks give the Payment Service two ways to discover a capture. Both paths verify the payment with Razorpay before recording success.
+![Payment processing flow from checkout and Razorpay verification through the transactional outbox to Kafka and the order service](docs/images/payment-processing-flow.svg)
 
-![Payment processing flow from checkout and Razorpay verification through the transactional Outbox to Kafka and the order service](docs/images/payment-processing-flow.svg)
+1. **Start checkout.** An order creation event creates a `PENDING` payment. When the customer starts checkout, the service saves the checkout request and payment attempt before calling Razorpay with the stored amount and currency. A retry with the same key can retrieve the original completed checkout. If the gateway times out, the attempt stays open because Razorpay may have created the order before the response was lost.
+2. **Verify the result.** The browser can submit the Razorpay checkout result as soon as checkout finishes. Razorpay also sends a signed webhook on capture, including when the browser callback succeeds. The webhook gives the service a way to reconcile the payment if the customer closes the tab or the callback fails.
+3. **Save the outcome and publish it.** A verified capture updates the payment and its attempt to `SUCCESS` and creates the outbox entry in the same database transaction. The publisher sends the stored event to Kafka and records completion after Kafka acknowledges the send. The order service uses that event to confirm a pending order.
 
-1. **Start checkout.** The client calls `POST /payments/{orderId}/checkout` with an `Idempotency-Key`. The service checks that the payment belongs to the signed-in customer, then saves the checkout request and payment attempt before calling Razorpay with the amount and currency from the stored payment. When Razorpay returns an order ID, the service attaches it to the attempt and returns the checkout details. If the client retries a completed request with the same key, it gets the original checkout details. A gateway timeout leaves the attempt open because Razorpay may have created the order before the response was lost.
+[Checkout service](src/main/java/com/aashir/payment/service/CheckoutService.java) · [Verification service](src/main/java/com/aashir/payment/service/PaymentVerificationService.java) · [Outbox publisher](src/main/java/com/aashir/payment/service/OutboxPublisher.java)
 
-2. **Verify the result.** The client can submit the checkout result to `POST /payments/verify` as soon as checkout finishes. Razorpay can also call `POST /api/webhooks/razorpay`, which lets the service reconcile a capture even if the customer closes the browser before the callback reaches the server. The webhook endpoint verifies the signature on the original request body, stores the event, and acknowledges it. A scheduled worker handles the gateway lookup. Both paths use the payment and order references, amount, and currency to match the Razorpay response to the right local payment.
+## HTTP API
 
-3. **Save the outcome and publish it.** When Razorpay confirms a capture, the service updates the payment and attempt to `SUCCESS` and records the success event in the same MySQL transaction. The expiry path also checks Razorpay before closing a pending payment. If expiry goes ahead, the failure and its event are saved together. The Outbox publisher sends stored events to Kafka and marks each row published after Kafka acknowledges the send. If Kafka is unavailable, the row stays pending and the publisher can try again on a later run.
+The storefront sends the customer's bearer token with requests under `/payments`. Razorpay authenticates webhook deliveries with a signature on the request body.
 
-[Checkout service](src/main/java/com/aashir/payment/service/CheckoutService.java) · [Webhook processor](src/main/java/com/aashir/payment/service/WebhookEventProcessor.java) · [Outbox publisher](src/main/java/com/aashir/payment/service/OutboxPublisher.java)
+| Endpoint | What it does |
+|---|---|
+| `POST /payments/{orderId}/checkout` | Starts or replays checkout for the customer's order. Requires the `Idempotency-Key` header and the `method` query parameter. |
+| `POST /payments/verify` | Accepts `paymentId`, `razorpayOrderId`, `razorpayPaymentId`, and `razorpaySignature` in the request body. Returns the verification status. |
+| `GET /payments/{orderId}` | Reads the customer's stored payment status, amount, and currency. The storefront can check this after a timeout or reload. |
+| `POST /api/webhooks/razorpay` | Accepts the raw body with `X-Razorpay-Signature` and `x-razorpay-event-id`. Returns `200` for an accepted or duplicate delivery. |
+
+[Payment controller](src/main/java/com/aashir/payment/controller/PaymentController.java) · [Webhook controller](src/main/java/com/aashir/payment/controller/RazorpayWebhookController.java)
+
+## Payment Events
+
+| Direction | Kafka topic | Event | When it’s used |
+|---|---|---|---|
+| Consumes | `order-events` | `OrderCreatedKafkaEvent` | Creates a `PENDING` payment for a new order. A replay reuses the existing payment. |
+| Publishes | `payment-succeeded` | `PaymentSucceededEvent` | Checkout verification or webhook reconciliation confirms a capture. Carries `eventId`, `paymentId`, `orderId`, and `amount`. |
+| Publishes | `payment-failed` | `PaymentFailedEvent` | The expiry job closes a pending payment after checking Razorpay. Carries `eventId`, `paymentId`, `orderId`, and `reason`. |
+
+Both outgoing topics use the order ID as the Kafka message key. If Kafka accepts a send before the publisher records completion, the retry uses the same `eventId` so the order service can recognize the replay. Success and failure travel on separate topics and can arrive in either order.
+
+[Order event consumer](src/main/java/com/aashir/payment/kafka/OrderKafkaConsumer.java) · [Outbox service](src/main/java/com/aashir/payment/service/OutboxService.java)
 
 ## Reliability
 
-A payment can be reported by the browser callback, a Razorpay webhook, or both. The service uses the current Razorpay status to decide what happened and MySQL to track what it has already processed.
+### Webhook reconciliation
+
+The webhook controller verifies the signature against the original body and stores the delivery in `webhook_events` before acknowledging it. The worker claims the stored event, fetches the payment from Razorpay, and checks the gateway IDs, amount, currency, and status against the local checkout. A `payment.failed` webhook can close an individual attempt. The expiry job decides when to close the payment.
 
 | Situation | What the service does |
 |---|---|
-| Razorpay retries the same webhook delivery | Acknowledges the duplicate and keeps the original `webhook_events` row, using `x-razorpay-event-id` to identify it. |
-| A new webhook reports a capture already recorded | Preserves the successful payment and attempt. A unique Outbox key keeps one success record per payment. |
-| A write fails during capture reconciliation | Rolls back the payment, attempt, and success Outbox entry together. The webhook can be retried. |
-| Kafka accepts an event before the publisher records completion | The publisher may send it again with the same `eventId`, which the order service uses to recognize a replay. |
+| Razorpay retries a delivery | Uses `x-razorpay-event-id` to acknowledge the repeat and keep the original webhook row. |
+| The same capture is reported again | Preserves the successful payment and attempt. A unique outbox key keeps one success record per payment. |
+| A failure arrives after a successful capture | Keeps the successful state. Optimistic locking rejects a concurrent write based on an older payment or attempt version. |
+| A database write fails during capture reconciliation | Rolls back the payment, attempt, and success outbox entry together. The webhook becomes eligible for retry. |
 
-### Webhook retries and recovery
+The worker scans for eligible events every **5 seconds** by default. Retries become eligible after **5 seconds, 15 seconds, 45 seconds, 2 minutes, and 5 minutes**. After six unsuccessful attempts, the event moves to `DEAD` with its last error. Events stuck in `PROCESSING` for more than **10 minutes** can be reclaimed after a restart or crash.
 
-The webhook endpoint stores a signed event before acknowledging it. A scheduled worker scans for eligible events every **5 seconds** by default. After a failed attempt, the next retry becomes eligible after **5 seconds, 15 seconds, 45 seconds, 2 minutes, or 5 minutes**, depending on the attempt number. If the sixth attempt fails, the event is marked `DEAD` and its last error remains available for investigation.
-
-The worker also recovers events that have been stuck in `PROCESSING` for more than **10 minutes**. This covers a restart or crash after an event was claimed. The recovered event follows the same retry rules.
+[Reconciliation service](src/main/java/com/aashir/payment/service/WebhookPaymentReconciliationService.java) · [Webhook processor](src/main/java/com/aashir/payment/service/WebhookEventProcessor.java) · [Retry rules](src/main/java/com/aashir/payment/entity/WebhookEvent.java)
 
 ### Expiry and late capture
 
-A pending payment becomes eligible for local expiry after **30 minutes**. Before expiring it, the service checks Razorpay for each linked checkout order. If Razorpay reports an `authorized` or `captured` payment, or the lookup fails, the service defers expiry.
+A pending payment becomes eligible for expiry after **30 minutes** by default. Before closing it, the service checks Razorpay for each linked checkout order. It defers expiry when Razorpay reports an authorized or captured payment or when the lookup fails.
 
-Razorpay can still confirm a capture after that check. When it does, the Payment Service reconciles the payment and attempt to `SUCCESS`. If the order service has already cancelled the order and released its stock, it preserves `CANCELLED` and saves one `late_payment_reviews` record for the order and payment. That record gives an operator a way to follow up on the captured funds.
+A capture can still arrive after expiry. A verified late capture reconciles the payment and its attempt to `SUCCESS`. If the order service has already cancelled the order and released its stock, the order stays `CANCELLED` and the consumer records one `late_payment_reviews` entry for that order and payment.
 
-[Webhook retry rules](src/main/java/com/aashir/payment/entity/WebhookEvent.java) · [Expiry service](src/main/java/com/aashir/payment/service/PaymentExpiryService.java) · [Order consumer](https://github.com/Aashirshaikh07/e-commerce-spring-boot/blob/main/src/main/java/com/aashir/ecommerce/kafka/PaymentKafkaConsumer.java)
+[Expiry service](src/main/java/com/aashir/payment/service/PaymentExpiryService.java) · [Order service consumer](https://github.com/Aashirshaikh07/e-commerce-spring-boot/blob/main/src/main/java/com/aashir/ecommerce/kafka/PaymentKafkaConsumer.java)
 
 ## Tech Stack & Project Structure
 
 | Technology | Role in the service |
 |---|---|
-| Java 21 and Maven Wrapper | Build and run the service with the repository’s Maven version. |
-| Spring Boot 4.1.1 and Spring Security | Serve the checkout and webhook endpoints, authenticate clients, and run scheduled workers. |
-| Razorpay Java SDK | Create gateway orders and fetch payment details for verification and reconciliation. |
-| Spring Data JPA and MySQL | Store payments, checkout requests, webhook events, and Outbox records. |
+| Java 21 and Maven Wrapper | Build and run with the repository's Maven version. |
+| Spring Boot 4.1.1 and Spring Security | Serve the API, authenticate callers, and run scheduled workers. |
+| Razorpay Java SDK | Create checkout orders and retrieve payment details. |
+| Spring Data JPA and MySQL | Persist payments, attempts, webhook deliveries, and outbox records. |
 | Spring for Apache Kafka | Consume order creation events and publish payment outcomes. |
-| JUnit, Mockito, and Testcontainers | Test payment state transitions and verify transaction behavior against MySQL. |
+| JUnit, Mockito, and Testcontainers | Exercise reconciliation rules and check transaction behavior against MySQL. |
 
 ### Where to start in the code
 
 | Location | What you’ll find |
 |---|---|
-| `controller/` | `PaymentController` handles checkout and verification requests. `RazorpayWebhookController` receives signed webhooks. |
-| `gateway/` | `RazorpayGateway` wraps the SDK. `RazorpayWebhookSignatureVerifier` validates the signature against the original request body. |
-| `service/` | Checkout, verification, expiry, and reconciliation. Start with `CheckoutService`, `WebhookEventProcessor`, or `OutboxPublisher` depending on which part of the flow you’re tracing. |
-| `entity/` and `repository/` | Payment and attempt state rules, plus the queries that claim webhook events and retrieve pending Outbox records. |
-| `event/` and `kafka/` | The Kafka event payloads and `OrderKafkaConsumer`, which starts the payment lifecycle. |
-| `src/test/` | Unit and MySQL integration tests covering replay, late capture, and rollback. |
+| `controller/` and `gateway/` | The HTTP entry points, Razorpay client, and webhook signature verifier. |
+| `service/` | Checkout, verification, expiry, reconciliation, and outbox publishing. |
+| `entity/` and `repository/` | Payment state rules and queries for claiming webhook events and finding pending outbox entries. |
+| `event/` and `kafka/` | Kafka payloads and the consumer that starts the payment lifecycle. |
+| `src/test/` | Unit tests and MySQL integration tests. |
 
-[Build configuration](pom.xml) · [Source tree](src)
+[Build configuration](pom.xml) · [Source tree](src/main/java/com/aashir/payment)
+
+## Running Locally
+
+### Configuration
+
+Point `JAVA_HOME` at JDK 21. Create a local MySQL database named `payment_db`. The service defaults to port `8083`, MySQL at `localhost:3306`, and Kafka at `localhost:9092`. The database user defaults to `root`. Set `SPRING_DATASOURCE_USERNAME` to use another account.
+
+Set these variables in the shell or IDE run configuration that starts the Payment Service.
+
+| Variable | Value for local development |
+|---|---|
+| `DB_PASSWORD` | Password for the local MySQL account. |
+| `JWT_SECRET` | The signing secret used by the order service to issue customer JWTs. |
+| `SERVICE_SECRET` | Shared credential configured in both services for internal requests. |
+| `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` | API credentials from the Razorpay Test Mode dashboard. |
+| `RAZORPAY_WEBHOOK_SECRET` | Signing secret configured on the Test Mode webhook. |
+
+[Application properties](src/main/resources/application.properties)
+
+### Start the service
+
+If you need a local Kafka broker, start it with the supplied Compose file. Then start the service from the repository root.
+
+```sh
+docker compose up -d kafka
+sh mvnw spring-boot:run
+```
+
+In Windows PowerShell, use `.\mvnw.cmd spring-boot:run`. Run the order service and storefront for an end-to-end checkout so the order creation event reaches the payment consumer. [Local Kafka setup](docker-compose.yml) · [Order service repository](https://github.com/Aashirshaikh07/e-commerce-spring-boot)
+
+### Verify a webhook in Razorpay Test Mode
+
+1. **Connect the tunnel.** Run `ngrok http 8083` in a separate terminal. In the Razorpay Test Mode dashboard, set the webhook URL to your current HTTPS forwarding address plus `/api/webhooks/razorpay`. Subscribe to `payment.captured`. Add `payment.failed` to test failed attempts.
+2. **Isolate the webhook path.** In the storefront's browser, block `http://localhost:8083/payments/verify` with DevTools. Keep DevTools open, place a fresh order, and complete a test payment. Check that Razorpay reports a capture and DevTools shows the verification request as blocked. [Chrome DevTools request blocking](https://developer.chrome.com/docs/devtools/request-conditions/)
+3. **Follow the delivery.** Open the ngrok inspector at `http://127.0.0.1:4040`. Find `POST /api/webhooks/razorpay` with status `200`. Match the request's `x-razorpay-event-id` to the `webhook_events` row or the worker's log.
+4. **Check the order.** The webhook row should reach `PROCESSED`, the payment should reach `SUCCESS`, and the order should show `CONFIRMED`. Remove the browser blocking rule when the test is complete.
+
+| What you see | Where to check |
+|---|---|
+| `POST /` returns `401` | Check the Razorpay dashboard URL for the full `/api/webhooks/razorpay` path. |
+| The full path returns `401` with `invalid_signature` | Check that the dashboard's signing secret matches `RAZORPAY_WEBHOOK_SECRET`. |
+| The webhook returns `200` and the order is still pending | The response acknowledges receipt. Check the event's status and `last_error`, then check the success outbox entry and Kafka consumer. |
+
+## Testing
+
+Start Docker for the MySQL Testcontainers tests. The application context smoke test uses the local database and environment variables above.
+
+```sh
+sh mvnw test
+```
+
+In Windows PowerShell, run `.\mvnw.cmd test`.
+
+- **Unit tests** cover webhook signature verification, state transitions, expiry, and worker retries.
+- **MySQL integration tests** cover duplicate delivery IDs, replayed captures, transaction rollback, and concurrent attempts to change payment state.
+
+[Webhook repository tests](src/test/java/com/aashir/payment/repository/WebhookEventRepositoryIntegrationTest.java) · [Reconciliation integration tests](src/test/java/com/aashir/payment/service/WebhookPaymentReconciliationIntegrationTest.java)
